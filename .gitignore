@@ -1,0 +1,6 @@
+.env
+.env.local
+node_modules/
+dist/
+evidence/*.jsonl
+!evidence/.gitkeep
