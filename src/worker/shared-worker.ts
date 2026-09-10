@@ -1,7 +1,7 @@
 import { BudgetGovernor } from "../governor/governor.js";
 
 export interface WorkerTransport {
-  complete(input: { model: string; prompt: string; maxTokens: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }>;
+  complete(input: { model: string; prompt: string; maxTokens: number; inputTokens?: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }>;
 }
 
 export interface WorkerStep {
@@ -38,7 +38,7 @@ export class SharedWorker {
         return { completed: false, outputs, refusal: admission.reason };
       }
       try {
-        const response = await this.completeBeforeDeadline(admission.reservation.expiresAtMs, { model: step.model, prompt: step.prompt, maxTokens: step.maxTokens });
+        const response = await this.completeBeforeDeadline(admission.reservation.expiresAtMs, { model: step.model, prompt: step.prompt, maxTokens: step.maxTokens, inputTokens: step.inputTokens });
         if (typeof response.usage?.cost === "number") await this.governor.commitExact(admission.reservation.attemptId, response.usage.cost);
         else await this.governor.commitEstimated(
           admission.reservation.attemptId,
@@ -59,7 +59,7 @@ export class SharedWorker {
     return { completed: true, outputs };
   }
 
-  private async completeBeforeDeadline(expiresAtMs: number, input: { model: string; prompt: string; maxTokens: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }> {
+  private async completeBeforeDeadline(expiresAtMs: number, input: { model: string; prompt: string; maxTokens: number; inputTokens?: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }> {
     const remainingMs = Math.max(1, expiresAtMs - Date.now() - 1);
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("reservation_deadline_exceeded")), remainingMs); });

@@ -31,7 +31,10 @@ async function testRetryReleaseRace(): Promise<void> {
   ]);
   assert.ok(retry.admitted, "the retry is admitted only after the original reservation expires");
   assert.equal(governor.snapshot().reservedTotal, 1.25, "the expired reservation cannot overlap the retry");
-  assert.equal(await governor.commitExact("attempt-a", 0.1), false, "late original result cannot reconcile into the retry");
+  // nowMs=150: past attempt-a's expiry (100) but before attempt-b's (201) -- isolates
+  // "does a late result for the expired original corrupt the still-active retry" from
+  // an unrelated real-clock sweep expiring the retry too.
+  assert.equal(await governor.commitExact("attempt-a", 0.1, 150), false, "late original result cannot reconcile into the retry");
   assert.equal(governor.snapshot().reservedTotal, 1.25, "late result cannot change another attempt's reservation");
   assert.equal(ledger.count("RESERVATION_EXPIRED"), 1);
   assert.equal(ledger.count("LATE_RESULT_REJECTED"), 1);
@@ -93,7 +96,10 @@ async function testStartupStepBudgetAssertion(): Promise<void> {
   const ledger = new ReservationLedger();
   const governor = new BudgetGovernor({ budgetUsd: 1, reservationTtlMs: 100, reservationSafetyMultiplier: 1.25, maxStepBudgetFraction: 0.25, prices }, ledger);
   const worker = new SharedWorker(governor, { complete: async () => ({ text: "unused", usage: { cost: 0 } }) }, "bounded");
-  await assert.rejects(worker.run([{ id: "oversized", model: "test/cheap", prompt: "x", inputTokens: 0, maxTokens: 1_000_000 }]), /mission-budget fraction/);
+  // maxTokens=500_000 -> worst-case $0.625: over the 25% fraction limit ($0.25) but
+  // under the full $1.00 budget, so this isolates the fraction guard specifically
+  // instead of tripping the coarser "exceeds mission budget" check first.
+  await assert.rejects(worker.run([{ id: "oversized", model: "test/cheap", prompt: "x", inputTokens: 0, maxTokens: 500_000 }]), /mission-budget fraction/);
 }
 
 async function testGovernorIsolation(): Promise<void> {
