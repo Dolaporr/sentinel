@@ -121,13 +121,91 @@ async function nakedAgent(): Promise<{
   return { died: true, reason: "BUDGET_EXHAUSTED", spent_usd: spentUsd, budget_usd: missionBudgetUsd, completed_mission: false, calls };
 }
 
+/**
+ * Same expensive default and open-ended research loop as naked, with the
+ * governor in front of every call. Fraction is 1: the $1 mission budget is
+ * the admission ceiling (the 25% cap is Sentinel cheap-routing policy).
+ */
+async function governedExpensiveAgent(): Promise<{
+  survived: true;
+  died: false;
+  refusal: string;
+  spent_usd: number;
+  remaining_usd: number;
+  budget_usd: number;
+  completed_mission: false;
+  calls: Array<{ round: number; stepId: string; model: string; reserved_usd: number; cost: number; spent_usd: number }>;
+  governor: ReturnType<BudgetGovernor["snapshot"]>;
+  events: ReturnType<ReservationLedger["all"]>;
+}> {
+  const ledger = new ReservationLedger();
+  const governor = new BudgetGovernor({
+    budgetUsd: missionBudgetUsd,
+    reservationTtlMs: 30_000,
+    reservationSafetyMultiplier: 1.25,
+    maxStepBudgetFraction: 1,
+    prices
+  }, ledger);
+  const calls: Array<{ round: number; stepId: string; model: string; reserved_usd: number; cost: number; spent_usd: number }> = [];
+  let round = 0;
+  while (true) {
+    round += 1;
+    for (const step of researchSteps) {
+      const admission = await governor.reserve({
+        attemptId: `governed-expensive:${step.id}:r${round}:${crypto.randomUUID()}`,
+        logicalCallId: `governed-expensive:${step.id}:r${round}`,
+        model: EXPENSIVE_MODEL,
+        inputTokens: step.inputTokens,
+        maxTokens: step.maxTokens
+      });
+      if (!admission.admitted) {
+        await governor.finishMission({ completed: false, reason: `admission_refused:${admission.reason}` });
+        const snap = governor.snapshot();
+        const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
+        return {
+          survived: true,
+          died: false,
+          refusal: admission.reason,
+          spent_usd: spentUsd,
+          remaining_usd: roundUsd(missionBudgetUsd - spentUsd),
+          budget_usd: missionBudgetUsd,
+          completed_mission: false,
+          calls,
+          governor: snap,
+          events: ledger.all()
+        };
+      }
+      const response = await offlineTransport.complete({
+        model: EXPENSIVE_MODEL,
+        prompt: `${step.prompt} (round ${round}; keep gathering sources)`,
+        maxTokens: step.maxTokens,
+        inputTokens: step.inputTokens
+      });
+      const cost = response.usage?.cost;
+      if (typeof cost === "number") await governor.commitExact(admission.reservation.attemptId, cost);
+      else await governor.commitEstimated(admission.reservation.attemptId, "missing_usage_cost", response.usage?.outputTokens);
+      const snap = governor.snapshot();
+      const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
+      calls.push({
+        round,
+        stepId: step.id,
+        model: EXPENSIVE_MODEL,
+        reserved_usd: admission.reservation.amountUsd,
+        cost: typeof cost === "number" ? cost : 0,
+        spent_usd: spentUsd
+      });
+    }
+  }
+}
+
 const sentinelSteps = [...researchSteps, synthesisStep].map(cheapRoute);
 const watchedA = watchedAgent("watched-a");
 const watchedB = watchedAgent("watched-b");
-const [a, b, naked] = await Promise.all([
+const [a, b, naked, governedExpensive] = await Promise.all([
   watchedA.worker.run(sentinelSteps),
   watchedB.worker.run(sentinelSteps),
-  nakedAgent()
+  nakedAgent(),
+  governedExpensiveAgent()
 ]);
 
 console.log(JSON.stringify({
@@ -138,5 +216,6 @@ console.log(JSON.stringify({
   sentinel_routing: "cheap-by-default",
   watched_a: { result: a, governor: watchedA.governor.snapshot(), events: watchedA.ledger.all() },
   watched_b: { result: b, governor: watchedB.governor.snapshot(), events: watchedB.ledger.all() },
-  naked
+  naked,
+  governed_expensive: governedExpensive
 }, null, 2));
