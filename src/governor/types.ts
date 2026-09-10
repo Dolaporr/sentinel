@@ -22,6 +22,10 @@ export interface Reservation {
   logicalCallId: string;
   model: string;
   amountUsd: number;
+  inputTokens: number;
+  maxTokens: number;
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
   expiresAtMs: number;
   state: ReservationState;
   safetyMultiplier: number;
@@ -62,7 +66,7 @@ export interface GovernorSnapshot {
   reservations: ReadonlyMap<string, Reservation>;
 }
 
-export type AdmissionRefusalReason = "MODEL_UNPRICED" | "BUDGET_EXCEEDED" | "DUPLICATE_ATTEMPT" | "QUARANTINED";
+export type AdmissionRefusalReason = "MODEL_UNPRICED" | "BUDGET_EXCEEDED" | "DUPLICATE_ATTEMPT" | "LOGICAL_CALL_IN_FLIGHT" | "QUARANTINED";
 
 export type Admission =
   | { admitted: true; reservation: Reservation }
