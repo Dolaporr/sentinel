@@ -10,6 +10,7 @@
     "d1": "tsx scripts/d1-lifecycle.ts",
     "d1:gateway-inference": "tsx scripts/d1-gateway-inference.ts",
     "d2:race": "tsx scripts/d2-race.ts",
+    "d2:race:live": "tsx scripts/d2-race-live.ts",
     "test:d2": "tsx tests/unit/d2-governor.test.ts",
     "typecheck": "tsc --noEmit"
   },
