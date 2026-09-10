@@ -5,6 +5,7 @@ export interface GovernorConfig {
   budgetUsd: number;
   reservationTtlMs: number;
   reservationSafetyMultiplier: number;
+  maxStepBudgetFraction: number;
   prices: Readonly<Record<string, PriceEntry>>;
 }
 
@@ -23,6 +24,7 @@ export class BudgetGovernor {
     if (config.budgetUsd <= 0) throw new Error("budgetUsd must be positive.");
     if (config.reservationTtlMs <= 0) throw new Error("reservationTtlMs must be positive.");
     if (config.reservationSafetyMultiplier < 1) throw new Error("reservationSafetyMultiplier must be >= 1.");
+    if (config.maxStepBudgetFraction <= 0 || config.maxStepBudgetFraction > 1) throw new Error("maxStepBudgetFraction must be in (0, 1].");
   }
 
   async reserve(request: ReservationRequest): Promise<Admission> {
@@ -31,10 +33,12 @@ export class BudgetGovernor {
       this.expireUnlocked(nowMs);
       if (this.quarantined) return this.refuse("QUARANTINED", request, {});
       if (this.reservations.has(request.attemptId)) return this.refuse("DUPLICATE_ATTEMPT", request, {});
+      if ([...this.reservations.values()].some((reservation) => reservation.logicalCallId === request.logicalCallId && reservation.state === "active")) {
+        return this.refuse("LOGICAL_CALL_IN_FLIGHT", request, {});
+      }
       const price = this.config.prices[request.model];
       if (!price) return this.refuse("MODEL_UNPRICED", request, { model: request.model });
-      const baseWorstCase = (request.inputTokens * price.inputPerMillionUsd + request.maxTokens * price.outputPerMillionUsd) / 1_000_000;
-      const amountUsd = round(baseWorstCase * this.config.reservationSafetyMultiplier);
+      const { baseWorstCase, amountUsd } = this.estimateWorstCase(request.model, request.inputTokens, request.maxTokens);
       if (this.totalCommitted() + this.reservedTotal + amountUsd > this.config.budgetUsd) {
         return this.refuse("BUDGET_EXCEEDED", request, { amount_usd: amountUsd });
       }
@@ -43,6 +47,10 @@ export class BudgetGovernor {
         logicalCallId: request.logicalCallId,
         model: request.model,
         amountUsd,
+        inputTokens: request.inputTokens,
+        maxTokens: request.maxTokens,
+        inputPerMillionUsd: price.inputPerMillionUsd,
+        outputPerMillionUsd: price.outputPerMillionUsd,
         expiresAtMs: nowMs + this.config.reservationTtlMs,
         state: "active",
         safetyMultiplier: this.config.reservationSafetyMultiplier
@@ -63,8 +71,9 @@ export class BudgetGovernor {
     });
   }
 
-  async commitExact(attemptId: string, costUsd: number): Promise<boolean> {
+  async commitExact(attemptId: string, costUsd: number, nowMs = Date.now()): Promise<boolean> {
     return this.atomic(async () => {
+      this.expireUnlocked(nowMs);
       const reservation = this.reservations.get(attemptId);
       if (!reservation || reservation.state !== "active") return this.rejectLate(attemptId, costUsd, "exact_result_after_reservation_resolution");
       this.closeReservation(reservation);
@@ -82,18 +91,37 @@ export class BudgetGovernor {
     });
   }
 
-  async commitEstimated(attemptId: string, reason: string): Promise<boolean> {
+  async commitEstimated(attemptId: string, reason: string, outputTokens?: number, nowMs = Date.now()): Promise<boolean> {
     return this.atomic(async () => {
+      this.expireUnlocked(nowMs);
       const reservation = this.reservations.get(attemptId);
       if (!reservation || reservation.state !== "active") return this.rejectLate(attemptId, null, reason);
+      const estimatedCost = outputTokens === undefined
+        ? reservation.amountUsd
+        : this.estimateObservedOutput(reservation, outputTokens);
       this.closeReservation(reservation);
-      this.committedEstimated = round(this.committedEstimated + reservation.amountUsd);
-      this.record("COST_COMMITTED", reservation, reservation.amountUsd, "estimated", { cost_source: "estimated", reason });
+      this.committedEstimated = round(this.committedEstimated + estimatedCost);
+      this.record("COST_COMMITTED", reservation, estimatedCost, "estimated", {
+        cost_source: "estimated", reason, estimated_output_tokens: outputTokens ?? null,
+        estimated_from_observed_output: outputTokens !== undefined
+      });
       return true;
     });
   }
 
   async expire(nowMs = Date.now()): Promise<void> { await this.atomic(async () => this.expireUnlocked(nowMs)); }
+
+  assertStepFitsBudget(input: { model: string; inputTokens: number; maxTokens: number }): void {
+    if (!this.config.prices[input.model]) return;
+    const { amountUsd } = this.estimateWorstCase(input.model, input.inputTokens, input.maxTokens);
+    if (amountUsd > this.config.budgetUsd) {
+      throw new Error(`Step worst-case $${amountUsd.toFixed(6)} exceeds mission budget $${this.config.budgetUsd.toFixed(6)}.`);
+    }
+    const permitted = this.config.budgetUsd * this.config.maxStepBudgetFraction;
+    if (amountUsd > permitted) {
+      throw new Error(`Step worst-case $${amountUsd.toFixed(6)} exceeds the configured ${(this.config.maxStepBudgetFraction * 100).toFixed(0)}% mission-budget fraction ($${permitted.toFixed(6)}).`);
+    }
+  }
 
   async finishMission(input: { completed: boolean; reason: string }): Promise<void> {
     await this.atomic(async () => {
@@ -163,6 +191,19 @@ export class BudgetGovernor {
   }
 
   private totalCommitted(): number { return round(this.committedExact + this.committedEstimated); }
+
+  private estimateWorstCase(model: string, inputTokens: number, maxTokens: number): { baseWorstCase: number; amountUsd: number } {
+    const price = this.config.prices[model];
+    if (!price) throw new Error(`No verified price entry for ${model}.`);
+    const baseWorstCase = (inputTokens * price.inputPerMillionUsd + maxTokens * price.outputPerMillionUsd) / 1_000_000;
+    return { baseWorstCase, amountUsd: round(baseWorstCase * this.config.reservationSafetyMultiplier) };
+  }
+
+  private estimateObservedOutput(reservation: Reservation, outputTokens: number): number {
+    const boundedOutput = Math.max(0, Math.min(reservation.maxTokens, outputTokens));
+    const base = (reservation.inputTokens * reservation.inputPerMillionUsd + boundedOutput * reservation.outputPerMillionUsd) / 1_000_000;
+    return round(base * reservation.safetyMultiplier);
+  }
 
   private async atomic<T>(operation: () => Promise<T>): Promise<T> {
     let unlock!: () => void;

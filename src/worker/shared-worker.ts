@@ -1,7 +1,7 @@
 import { BudgetGovernor } from "../governor/governor.js";
 
 export interface WorkerTransport {
-  complete(input: { model: string; prompt: string; maxTokens: number }): Promise<{ text: string; usage?: { cost?: number } }>;
+  complete(input: { model: string; prompt: string; maxTokens: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }>;
 }
 
 export interface WorkerStep {
@@ -23,6 +23,7 @@ export class SharedWorker {
   constructor(private readonly governor: BudgetGovernor, private readonly transport: WorkerTransport, private readonly workerId: string) {}
 
   async run(steps: readonly WorkerStep[]): Promise<WorkerRunResult> {
+    for (const step of steps) this.governor.assertStepFitsBudget(step);
     const outputs: Array<{ stepId: string; text: string }> = [];
     for (const step of steps) {
       const admission = await this.governor.reserve({
@@ -37,9 +38,13 @@ export class SharedWorker {
         return { completed: false, outputs, refusal: admission.reason };
       }
       try {
-        const response = await this.transport.complete({ model: step.model, prompt: step.prompt, maxTokens: step.maxTokens });
+        const response = await this.completeBeforeDeadline(admission.reservation.expiresAtMs, { model: step.model, prompt: step.prompt, maxTokens: step.maxTokens });
         if (typeof response.usage?.cost === "number") await this.governor.commitExact(admission.reservation.attemptId, response.usage.cost);
-        else await this.governor.commitEstimated(admission.reservation.attemptId, "missing_usage_cost");
+        else await this.governor.commitEstimated(
+          admission.reservation.attemptId,
+          "missing_usage_cost",
+          response.usage?.outputTokens ?? this.estimateOutputTokens(response.text)
+        );
         outputs.push({ stepId: step.id, text: response.text });
       } catch (error) {
         await this.governor.commitEstimated(admission.reservation.attemptId, `transport_error:${error instanceof Error ? error.name : "unknown"}`);
@@ -52,5 +57,17 @@ export class SharedWorker {
       return { completed: false, outputs, refusal: "QUARANTINED" };
     }
     return { completed: true, outputs };
+  }
+
+  private async completeBeforeDeadline(expiresAtMs: number, input: { model: string; prompt: string; maxTokens: number }): Promise<{ text: string; usage?: { cost?: number; outputTokens?: number } }> {
+    const remainingMs = Math.max(1, expiresAtMs - Date.now() - 1);
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    const deadline = new Promise<never>((_, reject) => { timeout = setTimeout(() => reject(new Error("reservation_deadline_exceeded")), remainingMs); });
+    try { return await Promise.race([this.transport.complete(input), deadline]); }
+    finally { if (timeout) clearTimeout(timeout); }
+  }
+
+  private estimateOutputTokens(text: string): number {
+    return text.length === 0 ? 0 : Math.ceil(text.length / 4);
   }
 }
