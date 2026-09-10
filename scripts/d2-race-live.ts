@@ -13,8 +13,7 @@ import {
   runGovernedExpensiveAgent,
   runNakedAgent,
   sentinelSteps,
-  worstCaseUsd,
-  type MissionStep
+  worstCaseUsd
 } from "../src/runner/d2-mission.js";
 import type { WorkerTransport } from "../src/worker/shared-worker.js";
 
@@ -42,10 +41,10 @@ if (!Number.isFinite(sessionBudgetUsd) || sessionBudgetUsd <= 0 || sessionBudget
 const liveTtlMs = Number(process.env.D2_LIVE_TTL_MS ?? 180_000);
 const fixturePath = resolve(process.cwd(), "fixtures", "sample-feed.jsonl");
 
-const livePrompt = (step: MissionStep, round: number) =>
-  `${step.prompt} (round ${round}; keep gathering sources). Write an exhaustive research brief that uses as ` +
-  "much of the output budget as possible. Include numbered findings, quoted passages, methodology, and a " +
-  "source list. Do not stop early.";
+// No prompt fiction here any more. The mission's own buildPrompt() carries the
+// corpus and the task; the previous "use as much of the output budget as
+// possible" instruction existed only to inflate utilisation toward a fantasy
+// max_tokens, which is the thing being corrected, not preserved.
 
 interface LiveCall {
   ts: string;
@@ -227,8 +226,8 @@ console.log(`sentinel done: completed=${sentinelResult.completed} committed_exac
 
 console.log("\n--- [2/3] governed-expensive (expensive model, governed) ---");
 const governedTransport = createLiveTransport("governed-expensive", cap, liveCalls);
-const governedExpensive = await runGovernedExpensiveAgent(governedTransport, livePrompt, liveTtlMs);
-console.log(`governed-expensive done: died=${governedExpensive.died} refusal=${governedExpensive.refusal} spent=$${governedExpensive.spent_usd} remaining=$${governedExpensive.remaining_usd}`);
+const governedExpensive = await runGovernedExpensiveAgent(governedTransport, undefined, liveTtlMs);
+console.log(`governed-expensive done: died=${governedExpensive.died} refusal=${governedExpensive.refusal} on step=${governedExpensive.refused_step} spent=$${governedExpensive.spent_usd} remaining=$${governedExpensive.remaining_usd}`);
 
 console.log("\n--- [3/3] naked (expensive model, ungoverned) ---");
 const nakedTransport = createLiveTransport("naked", cap, liveCalls);
@@ -245,7 +244,7 @@ interface NakedCrashed {
 }
 let naked: Awaited<ReturnType<typeof runNakedAgent>> | NakedCrashed;
 try {
-  naked = await runNakedAgent(nakedTransport, livePrompt);
+  naked = await runNakedAgent(nakedTransport);
 } catch (error) {
   // Deliberately not caught inside runNakedAgent itself -- naked has no
   // safety net by design, including no error handling. This outer catch
@@ -342,6 +341,7 @@ const resultPayload = {
     survived: governedExpensive.survived,
     died: governedExpensive.died,
     refusal: governedExpensive.refusal,
+    refused_step: governedExpensive.refused_step,
     spent_usd: governedExpensive.spent_usd,
     remaining_usd: governedExpensive.remaining_usd,
     committed_exact: governedExpensive.governor.committedExact,

@@ -44,3 +44,38 @@ The following rules are mandatory. They are not fallbacks, best-effort behavior,
 ## 3. Origin
 
 This amendment resolves adversarial findings 03–09 in `tests/adversarial/findings/`: reservation expiry, unmetered streams, missing usage, unknown prices, unsafe output bounds, retry/release races, and refusal-driven self-starvation.
+
+## 4. Mission deviation — inlined corpus instead of live tools
+
+**Recorded 2026-09-10. Approved deviation from the original mission definition.**
+
+The original mission gave both agents `web_search` and `fetch_page` tools over a live topic. The
+implemented mission does not. It reads a fixed corpus checked into `fixtures/corpus/`, inlined
+into every prompt, and asks for extraction and synthesis over that text.
+
+**Why.** The first live run exposed that the tools were never real. Steps declared 12,000 input
+tokens and 24,000 output tokens while sending an eighty-token instruction to fetch a page the
+model had no tool for; the model replied asking which search engine was meant. Two consequences:
+
+- The worst-case reservation was computed against a prompt that did not exist, so the bound sat
+  10–60× above billed cost. That refused `governed-expensive` after a single call while `naked`
+  ran nineteen, which reads as an over-tuned governor rather than a fair comparison.
+- No agent was doing the mission, so the recorded artifact demonstrated governance over an
+  activity that was not happening.
+
+**What changed.** The corpus is real text really present in the prompt, so declared input size is
+derived from the assembled prompt at dispatch time rather than declared in a task definition and
+left to drift. Output ceilings are set from observed completion lengths — the largest completion
+in the first live run was 2,321 tokens — rather than round numbers. Sentinel's cheap routing caps
+output only; it no longer clamps input, which would have left it reading a truncated corpus and
+solving an easier problem than the agents it is compared against.
+
+**What did not change.** The worst-case formula and the `reservation_safety_multiplier` are
+untouched. A sound bound necessarily exceeds billed cost, because the ceiling is a ceiling and
+completions land beneath it. The correction was to the bound's inputs, not to the margin applied
+to it; discounting the multiplier toward observed cost would have reintroduced finding 07.
+
+**Reproducibility.** A recorded artifact that depends on live web content cannot be verified by
+anyone reading it later. The corpus is in the repository, so the run can be reproduced from a
+clone. The corpus documents are clearly labelled synthetic fixtures and are not claims about the
+world.

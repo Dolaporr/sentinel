@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
 import type { GovernorSnapshot, PriceEntry } from "../governor/types.js";
@@ -16,29 +18,82 @@ export const prices: Record<string, PriceEntry> = {
 
 export const roundUsd = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
+/**
+ * Deliberately divides by 3.5 rather than the usual chars/4 heuristic, so the
+ * figure over-counts slightly. Input tokens feed the worst-case bound, and an
+ * over-count errs high -- the safe direction. Never use this to compute a
+ * billed amount; billed cost comes from the provider's usage.cost.
+ */
+export function estimateTokens(text: string): number {
+  return Math.ceil(text.length / 3.5);
+}
+
+// --- The corpus -------------------------------------------------------------
+// The mission reads real text that is really in the prompt. Earlier revisions
+// declared thousands of input tokens while sending an 80-token one-liner about
+// fetching pages the model had no tool for, so the reservation was computed
+// against a prompt that never existed and the model replied asking what was
+// meant. Every token counted below is a token actually sent.
+
+const CORPUS_DIR = resolve(process.cwd(), "fixtures", "corpus");
+const CORPUS_FILES = ["01-incident-postmortem.md", "02-design-tradeoffs.md", "03-measurement-study.md"] as const;
+
+export interface CorpusDocument { id: string; title: string; text: string; }
+
+export const corpus: CorpusDocument[] = CORPUS_FILES.map((file) => {
+  const text = readFileSync(resolve(CORPUS_DIR, file), "utf8");
+  const heading = text.split("\n").find((line) => line.startsWith("## "))?.slice(3).trim() ?? file;
+  return { id: file.replace(/\.md$/, ""), title: heading, text };
+});
+
+const corpusBlock = corpus
+  .map((doc) => `<source id="${doc.id}" title="${doc.title}">\n${doc.text}\n</source>`)
+  .join("\n\n");
+
+// --- Mission steps ----------------------------------------------------------
+
 export interface MissionStep {
   id: string;
-  kind: "web_search" | "fetch_page" | "synthesize";
-  prompt: string;
-  inputTokens: number;
+  kind: "extract" | "synthesize";
+  /** Full prompt actually sent. inputTokens is derived from this, never declared. */
+  buildPrompt: (round: number) => string;
   maxTokens: number;
 }
 
-/** Open-ended research: search, fetch pages, then keep gathering if ungated. */
-export const researchSteps: MissionStep[] = [
-  { id: "web_search", kind: "web_search", prompt: "web search for primary sources", inputTokens: 4_000, maxTokens: 20_000 },
-  { id: "fetch_1", kind: "fetch_page", prompt: "fetch first search-result page", inputTokens: 12_000, maxTokens: 24_000 },
-  { id: "fetch_2", kind: "fetch_page", prompt: "fetch second search-result page", inputTokens: 12_000, maxTokens: 24_000 },
-  { id: "fetch_3", kind: "fetch_page", prompt: "fetch third search-result page", inputTokens: 12_000, maxTokens: 24_000 }
-];
+function extractStep(doc: CorpusDocument, index: number): MissionStep {
+  return {
+    id: `extract_${index + 1}`,
+    kind: "extract",
+    maxTokens: 1_500,
+    buildPrompt: (round) =>
+      `You are compiling a research brief on cost controls for metered model APIs.\n\n` +
+      `Below are three source documents. They are synthetic fixtures written for this exercise, ` +
+      `not real-world reporting -- treat them as the only evidence available and do not import outside facts.\n\n` +
+      `${corpusBlock}\n\n` +
+      `Task (pass ${round}): extract the substantive findings from source "${doc.id}" specifically. ` +
+      `For each finding give a one-line claim followed by the source id and a short supporting quotation. ` +
+      `Note explicitly where this source disagrees with or qualifies the other two.`
+  };
+}
+
+export const researchSteps: MissionStep[] = corpus.map(extractStep);
 
 export const synthesisStep: MissionStep = {
   id: "synthesize",
   kind: "synthesize",
-  prompt: "synthesize gathered sources into a finished answer",
-  inputTokens: 8_000,
-  maxTokens: 16_000
+  maxTokens: 3_000,
+  buildPrompt: (round) =>
+    `You are compiling a research brief on cost controls for metered model APIs.\n\n` +
+    `Below are three source documents. They are synthetic fixtures written for this exercise, ` +
+    `not real-world reporting -- treat them as the only evidence available and do not import outside facts.\n\n` +
+    `${corpusBlock}\n\n` +
+    `Task (pass ${round}): synthesise the three sources into a structured brief. Cover where a spend ` +
+    `ceiling should sit and why, what each alternative position fails at, and how a worst-case cost bound ` +
+    `should be calibrated. Cite source ids inline for every claim. Close with the strongest objection a ` +
+    `reviewer could raise against the position you have argued.`
 };
+
+export const missionSteps: MissionStep[] = [...researchSteps, synthesisStep];
 
 export function worstCaseUsd(model: string, inputTokens: number, maxTokens: number): number {
   const price = prices[model];
@@ -53,25 +108,36 @@ export function bill(model: string, inputTokens: number, outputTokens: number): 
   return roundUsd((inputTokens * price.inputPerMillionUsd + outputTokens * price.outputPerMillionUsd) / 1_000_000);
 }
 
-export function cheapRoute(step: MissionStep): WorkerStep {
+/**
+ * Sentinel policy: cheap model, capped OUTPUT. It deliberately does not clamp
+ * input -- the corpus is the mission, and truncating it would leave Sentinel
+ * solving an easier problem than the agents it is being compared against.
+ */
+export const SENTINEL_OUTPUT_CAP = 1_200;
+
+export function cheapRoute(step: MissionStep, round = 1): WorkerStep {
+  const prompt = step.buildPrompt(round);
   return {
     id: step.id,
     model: CHEAP_MODEL,
-    prompt: step.prompt,
-    inputTokens: Math.min(step.inputTokens, 256),
-    maxTokens: Math.min(step.maxTokens, 512)
+    prompt,
+    inputTokens: estimateTokens(prompt),
+    maxTokens: Math.min(step.maxTokens, SENTINEL_OUTPUT_CAP)
   };
 }
 
-export const sentinelSteps: WorkerStep[] = [...researchSteps, synthesisStep].map(cheapRoute);
+export const sentinelSteps: WorkerStep[] = missionSteps.map((step) => cheapRoute(step));
 
 export function createOfflineTransport(): WorkerTransport {
   return {
     async complete(input) {
       const inputTokens = input.inputTokens ?? 0;
-      const outputTokens = input.model === EXPENSIVE_MODEL ? input.maxTokens : Math.min(32, input.maxTokens);
+      // Offline stand-in for real completion length. The live run's observed
+      // ceiling utilisation was ~10%; this keeps the mock in that neighbourhood
+      // rather than pretending every call saturates its ceiling.
+      const outputTokens = Math.min(input.maxTokens, Math.round(input.maxTokens * 0.6));
       return {
-        text: `offline ${input.prompt}`,
+        text: `offline completion for ${input.prompt.slice(0, 60)}...`,
         usage: { cost: bill(input.model, inputTokens, outputTokens), outputTokens }
       };
     }
@@ -92,7 +158,7 @@ export function createSentinel(id: string, transport: WorkerTransport, reservati
 
 export type PromptFor = (step: MissionStep, round: number) => string;
 
-const defaultPromptFor: PromptFor = (step, round) => `${step.prompt} (round ${round}; keep gathering sources)`;
+const defaultPromptFor: PromptFor = (step, round) => step.buildPrompt(round);
 
 export async function runNakedAgent(transport: WorkerTransport, promptFor: PromptFor = defaultPromptFor) {
   const calls: Array<{ round: number; stepId: string; model: string; cost: number; spent_usd: number }> = [];
@@ -100,12 +166,13 @@ export async function runNakedAgent(transport: WorkerTransport, promptFor: Promp
   let round = 0;
   while (spentUsd < MISSION_BUDGET_USD) {
     round += 1;
-    for (const step of researchSteps) {
+    for (const step of missionSteps) {
+      const prompt = promptFor(step, round);
       const response = await transport.complete({
         model: EXPENSIVE_MODEL,
-        prompt: promptFor(step, round),
+        prompt,
         maxTokens: step.maxTokens,
-        inputTokens: step.inputTokens
+        inputTokens: estimateTokens(prompt)
       });
       const cost = response.usage?.cost ?? 0;
       spentUsd = roundUsd(spentUsd + cost);
@@ -126,6 +193,7 @@ export async function runGovernedExpensiveAgent(
   survived: true;
   died: false;
   refusal: string;
+  refused_step: string | null;
   spent_usd: number;
   remaining_usd: number;
   budget_usd: number;
@@ -144,70 +212,64 @@ export async function runGovernedExpensiveAgent(
   }, ledger);
   const calls: Array<{ round: number; stepId: string; model: string; reserved_usd: number; cost: number; spent_usd: number }> = [];
   let round = 0;
+
+  const stop = (refusal: string, refusedStep: string | null) => {
+    const snap = governor.snapshot();
+    const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
+    return {
+      survived: true as const,
+      died: false as const,
+      refusal,
+      refused_step: refusedStep,
+      spent_usd: spentUsd,
+      remaining_usd: roundUsd(MISSION_BUDGET_USD - spentUsd),
+      budget_usd: MISSION_BUDGET_USD,
+      completed_mission: false as const,
+      calls,
+      governor: snap,
+      events: ledger.all()
+    };
+  };
+
   while (true) {
     round += 1;
-    for (const step of researchSteps) {
+    for (const step of missionSteps) {
+      const prompt = promptFor(step, round);
+      const inputTokens = estimateTokens(prompt);
       const admission = await governor.reserve({
         attemptId: `governed-expensive:${step.id}:r${round}:${crypto.randomUUID()}`,
         logicalCallId: `governed-expensive:${step.id}:r${round}`,
         model: EXPENSIVE_MODEL,
-        inputTokens: step.inputTokens,
+        inputTokens,
         maxTokens: step.maxTokens
       });
       if (!admission.admitted) {
         await governor.finishMission({ completed: false, reason: `admission_refused:${admission.reason}` });
-        const snap = governor.snapshot();
-        const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
-        return {
-          survived: true,
-          died: false,
-          refusal: admission.reason,
-          spent_usd: spentUsd,
-          remaining_usd: roundUsd(MISSION_BUDGET_USD - spentUsd),
-          budget_usd: MISSION_BUDGET_USD,
-          completed_mission: false,
-          calls,
-          governor: snap,
-          events: ledger.all()
-        };
+        return stop(admission.reason, step.id);
       }
       try {
         const response = await transport.complete({
           model: EXPENSIVE_MODEL,
-          prompt: promptFor(step, round),
+          prompt,
           maxTokens: step.maxTokens,
-          inputTokens: step.inputTokens
+          inputTokens
         });
         const cost = response.usage?.cost;
         if (typeof cost === "number") await governor.commitExact(admission.reservation.attemptId, cost);
         else await governor.commitEstimated(admission.reservation.attemptId, "missing_usage_cost", response.usage?.outputTokens);
         const snap = governor.snapshot();
-        const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
         calls.push({
           round,
           stepId: step.id,
           model: EXPENSIVE_MODEL,
           reserved_usd: admission.reservation.amountUsd,
           cost: typeof cost === "number" ? cost : 0,
-          spent_usd: spentUsd
+          spent_usd: roundUsd(snap.committedExact + snap.committedEstimated)
         });
       } catch (error) {
         await governor.commitEstimated(admission.reservation.attemptId, `transport_error:${error instanceof Error ? error.name : "unknown"}`);
         await governor.finishMission({ completed: false, reason: "worker_call_failed" });
-        const snap = governor.snapshot();
-        const spentUsd = roundUsd(snap.committedExact + snap.committedEstimated);
-        return {
-          survived: true,
-          died: false,
-          refusal: "WORKER_CALL_FAILED",
-          spent_usd: spentUsd,
-          remaining_usd: roundUsd(MISSION_BUDGET_USD - spentUsd),
-          budget_usd: MISSION_BUDGET_USD,
-          completed_mission: false,
-          calls,
-          governor: snap,
-          events: ledger.all()
-        };
+        return stop("WORKER_CALL_FAILED", step.id);
       }
     }
   }
