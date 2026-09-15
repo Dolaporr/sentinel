@@ -11,4 +11,6 @@ Set one value in `MOCK_FAILURE_MODE` before `npm run d1`.
 | `revoke_midway_fail` | The mock disables the key then throws. | `RECOVERING` re-reads key state and balance; it accepts only `has_key=false` and an unchanged post-spend balance. |
 | `spend_telemetry_lag` | The key-status raw telemetry temporarily reports zero spend. | The balance delta remains the D1 source of truth; the lag is preserved in `raw.telemetry_lagging`. |
 
+The 30-second windows in `tool_latency_30s` and `spend_telemetry_lag` are choices made for the mock. They are not measurements. Orbio’s real telemetry lag has never been measured: no live run has yet read the balance before and after a known spend. See `docs/LIMITATIONS.md`.
+
 Every successful response retains its mock mode in raw evidence. A failed or irreconcilable revoke emits `RECONCILIATION_FAILED`; evidence is append-only.

@@ -266,30 +266,12 @@ if (session.spent_usd > sessionBudgetUsd) {
   throw new Error(`INVARIANT VIOLATED: live session spend $${session.spent_usd} exceeds the $${sessionBudgetUsd} cap.`);
 }
 
-const started = new Date().toISOString();
-const feed: FeedEvent[] = [];
-const push = (event: Omit<FeedEvent, "seq">) => { feed.push({ ...event, seq: feed.length + 1 }); };
-
-push({
-  ts: started,
-  event: "BALANCE_READ",
-  actor: "sentinel",
-  key_id: null,
-  orbio_balance: null,
-  orbio_spent: 0,
-  key_state: "active",
-  reason: "d2_live_session_start",
-  threshold: sessionBudgetUsd,
-  raw: { mode: "live", endpoint: ENDPOINT, default_model: EXPENSIVE_MODEL, cheap_model: CHEAP_MODEL, session_ceiling_usd: sessionBudgetUsd },
-  reservation_id: null,
-  logical_call_id: null,
-  committed_exact: 0,
-  committed_estimated: 0,
-  reserved_total: 0,
-  cost_source: null,
-  reservation_safety_multiplier: RESERVATION_SAFETY_MULTIPLIER,
-  mission_state: null
-});
+// This script holds only the gateway key, and the gateway key cannot read the
+// Orbio balance: that is readable only through the authenticated MCP bridge. It
+// performs no balance read, so it emits no BALANCE_READ. That event is written
+// only when a read actually happened, carrying the value the read returned.
+const events: Omit<FeedEvent, "seq">[] = [];
+const push = (event: Omit<FeedEvent, "seq">) => { events.push(event); };
 
 for (const call of liveCalls) {
   push({
@@ -326,10 +308,21 @@ for (const call of liveCalls) {
 for (const event of feedFromGovernor(sentinel.ledger.all(), "sentinel")) push(event);
 for (const event of feedFromGovernor(governedExpensive.events, "governed-expensive")) push(event);
 
+// Every event keeps the timestamp taken when it occurred: an INFERENCE_CALL when
+// its response arrived, a governor event when the governor recorded it. seq then
+// follows that order, so reading the feed by seq reads it in time order. The sort
+// is stable, so events stamped in the same millisecond keep their recorded order.
+const feed: FeedEvent[] = [...events]
+  .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts))
+  .map((event, index) => ({ ...event, seq: index + 1 }));
+
 const resultPayload = {
   mode: "live",
   session_budget_usd: sessionBudgetUsd,
   mission_budget_usd: MISSION_BUDGET_USD,
+  endpoint: ENDPOINT,
+  default_model: EXPENSIVE_MODEL,
+  cheap_model: CHEAP_MODEL,
   session,
   fixture: fixturePath,
   sentinel: {
