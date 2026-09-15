@@ -1,66 +1,162 @@
-# Finding: fastest credible balance-drain path beats any post-hoc breaker; the breaker must be pre-request and in-process
+# Finding: four concurrent requests can drain the balance within one request's latency; the breaker must admit before dispatch, hold the only copy of the key, and survive restarts
 
-**Target:** `src/orbio/client.ts` (`OrbioClient` interface / `MockOrbioClient`), plus the not-yet-built D3 breaker (`AGENTS.md`'s build order).
-**Severity:** High — this is an architectural placement question for D3, and getting it wrong makes the breaker decorative.
+**Target:**
+- the Orbio gateway model ([`docs/MCP_SURFACE.md`](../../../docs/MCP_SURFACE.md))
+- [`src/governor/governor.ts`](../../../src/governor/governor.ts) and [`src/governor/ledger.ts`](../../../src/governor/ledger.ts)
+- `SessionSpendCap` in [`scripts/d2-race-live.ts`](../../../scripts/d2-race-live.ts)
+- every script that reads `ORBIO_API_KEY`
+- the D3 breaker, which is not built yet
+
+**Severity:** High. This decides where D3's breaker has to live. Put it anywhere else and it's decoration.
+**Revised:** 2026-09-11. The 2026-09-07 version used assumed inputs ($5/call, 150ms, 20-way) and was written before the D2 governor existed. This version replaces those inputs with measured ones and adds three placement requirements the earlier version missed: key custody, durability, and gating key minting. The earlier conclusion, that admission must happen before the request, stands and is now shown against real numbers.
 
 ## Given
 
-- The Orbio gateway spends the account balance directly and has **no documented per-key or per-period spend cap** (project context; consistent with `docs/MCP_SURFACE.md`'s "Product model discovered live": a gateway key "spends the live Orbio balance directly... it has no credit limit of its own").
-- `orbio_revoke_key` does not contain the balance: it stops one key, but `orbio_create_key` "retires/replaces the previous gateway key," so a fresh key spends the same account balance (`docs/MCP_SURFACE.md`). Nothing in the observed tool surface ties revocation to the *account*, only to the *key*.
-- Every MCP tool call is a real round trip with real, sometimes large latency: `MOCK_FAILURE_MODES` includes `tool_latency_30s` ("Each mock operation waits 30 seconds... production should impose a per-tool deadline" — `docs/DAY1_FAILURE_MODES.md`), and the live bridge in `docs/DAY1_RESULT.md` didn't return inside its safety window at all.
-- Nothing in `src/orbio/client.ts` or `scripts/d1-lifecycle.ts` tracks *cumulative* spend. `MockOrbioClient.runInference`'s `maxCostUsd` check (`client.ts:57`) is a **per-call** ceiling supplied by the caller each time — it does nothing to stop 1,000 calls each individually under the cap.
+- A gateway key spends the account balance directly and "has no credit limit of its own". `orbio_create_key` "retires/replaces the previous gateway key", and `orbio_revoke_key` leaves the balance "explicitly unchanged" ([`docs/MCP_SURFACE.md`](../../../docs/MCP_SURFACE.md)). So revoking stops one key, and anyone who can mint gets a fresh uncapped key against the same balance.
+- **Telemetry lag L has never been measured.** No one has observed the live balance move ([finding 01](01-revoke-recovery-single-read-trust.md), "What is and isn't measured"). This analysis keeps L as a parameter and shows the answer doesn't depend on it.
+- The gateway key has **no telemetry endpoint**. `GET /api/v1/key`, `/auth/key` and `/credits` all return 404 (probed 2026-09-11, GETs only, no spend). The only spend signal the key holder gets is `usage.cost` in each response body, and that arrives only when the request completes.
 
-## Fastest credible drain path
+## Measured inputs
 
-An attacker (a compromised/prompt-injected agent, a leaked gateway secret, or a leaked account credential minting its own keys) doesn't need to be clever:
+| Input | Value | Source |
+| --- | --- | --- |
+| Balance | $100.076010 | Last actual read, 2026-09-07 ([`MCP_SURFACE.md`](../../../docs/MCP_SURFACE.md)). Unread since. |
+| Per-call latency, `openai/gpt-4.1` | 1.8s to 25.9s, median 15.6s (15,624ms) | 19 sequential naked-agent calls, `fixtures/sample-feed.jsonl` (live, 2026-09-10) |
+| Max observed cost per call | $0.01868 | same |
+| Warm round trip to `www.orbio.so` | 108–118ms | GETs, 2026-09-11 |
+| Advertised models | 439, none listing `max_completion_tokens` | `GET /api/v1/models`, 2026-09-11 |
+| Highest input-only full-context request | `gpt-5.5-pro` 1,050,000 tok × $30/M = **$31.50**. `o1-pro` 200,000 × $150/M = **$30.00**. `gpt-4.1` = $2.10. | same |
 
-1. Fire multiple concurrent inference calls against the gateway. Nothing observed in `docs/MCP_SURFACE.md` documents a per-request price ceiling or a concurrency/rate limit at the gateway, so a request using a large-context or otherwise expensive model is accepted the same as a trivial one.
-2. Because there is no cumulative tracking anywhere in this codebase or (per the given context) at the gateway itself, every one of those concurrent calls lands independently. The account balance is drawn down in parallel, not serially.
-3. Revoking a key is not a defense against this, because it only removes future access through *that* key — it does not undo in-flight requests, and (per point above) a new key can be minted immediately against the same balance.
+Input cost is a floor on what a single request costs, because the attacker chooses the input size. Output adds to it, and the price list gives no output ceiling.
 
-So the fastest credible drain is bounded only by **(cost per call) × (sustainable concurrency) / (one network round trip)** — not by anything Orbio or Sentinel currently enforces.
+## Fastest credible drain
 
-### Reproduction
+With N = ceil(B / c) requests needed and k in flight at once, drain time is ceil(N / k) × T. Output of [`drain_bound_from_measured_parameters.ts`](../repro/drain_bound_from_measured_parameters.ts):
 
-[`tests/adversarial/repro/balance_drain_race.ts`](../repro/balance_drain_race.ts) models this against two containment strategies, using the live-observed starting balance ($100.076010, `docs/MCP_SURFACE.md`), a $5/call cost (one moderately expensive call — well within what an unrestricted gateway would plausibly accept), a 150ms round trip (conservative relative to the round-trip magnitudes this repo's own docs already establish), and 20 concurrent in-flight requests:
+```
+naked agent as observed (sequential)         c=$  0.0134 N= 7466 waves=7466 drain ~ 31.7h
+same calls, 20 in flight                     c=$  0.0187 N= 5358 waves= 268 drain ~ 69.8min
+same calls, 200 in flight                    c=$  0.0187 N= 5358 waves=  27 drain ~ 7.0min
+gpt-4.1 full-context input, 48 in flight     c=$  2.0952 N=   48 waves=   1 drain ~ 15.6s
+gpt-5.5-pro full-context input, 4 in flight  c=$ 31.5000 N=    4 waves=   1 drain ~ 15.6s
+```
+
+**Answer:** four full-context requests to one listed model exceed the balance. All four fit in a single concurrent wave, so the fastest drain is **one request's latency**. With a model this repo already uses (`gpt-4.1`), 48 requests do the same. The 15.6s figure is the measured median for this repo's own 2k-token completions, used as a stand-in. A 1M-token request's latency hasn't been measured and will be longer. But it's still one wave: the attacker waits for one request, not for 5,358.
+
+Three gateway behaviours are unmeasured, and each could move this answer:
+
+- **Concurrency or rate limits.** A per-key concurrency cap below 4 would turn one wave into several.
+- **Balance pre-check.** Nobody knows whether the gateway refuses a request whose cost would exceed the remaining balance. If it doesn't, the fourth request overdraws.
+- **Admission of maximum-size requests.** The model list says what the gateway advertises. It doesn't prove the gateway will accept a 1M-token request.
+
+## A breaker that reacts to spend cannot beat this, whatever L is
+
+A breaker reacting to spend has two possible signals:
+
+- **`usage.cost`.** It arrives when the response completes.
+- **The balance.** It moves after the spend and after L.
+
+Neither can fire before the request that caused it has been billed:
+
+```
+breaker in the dispatch path reading usage.cost: trips at ~15.7s (T + one RTT) whatever L is; 20-in-flight gpt-4.1 lands >= $0.75 first
+L=  0.0s: balance watcher trips at ~ 16.9s; 20-in-flight gpt-4.1 lands >= $0.75 first
+L=  1.0s: balance watcher trips at ~ 17.9s; 20-in-flight gpt-4.1 lands >= $0.75 first
+L= 30.0s: balance watcher trips at ~ 46.9s; 20-in-flight gpt-4.1 lands >= $1.12 first
+L= 60.0s: balance watcher trips at ~ 76.9s; 20-in-flight gpt-4.1 lands >= $1.87 first
+Under either breaker, 4 full-context gpt-5.5-pro requests dispatched together bill $126.00 before it can trip.
+```
+
+L only changes how much *more* gets through. Even at L = 0 the drain has already finished by the time the breaker fires, because the drain takes one wave and the detection signal comes out of that same wave. So measuring L is still needed for reconciliation ([finding 01](01-revoke-recovery-single-read-trust.md)), but it doesn't change where the breaker has to go.
+
+Pre-dispatch admission, the shape `SessionSpendCap` already uses:
+
+```
+$3.00 ceiling: the first gpt-5.5-pro request reserves >= $31.50 and is refused before dispatch; $0.00 leaves the process.
+Worst case for any mix of priced calls: <= $3.00, whatever T or L is, provided every dispatch passes through it and no call bills above its reservation.
+```
+
+That "provided" clause holds three conditions, and the code today breaks two of them. Each broken condition becomes a placement requirement below.
+
+## Where the breaker must sit
+
+### 1. Before dispatch, reserving the worst case
+
+The D2 governor ([`governor.ts:42`](../../../src/governor/governor.ts#L42)) and `SessionSpendCap` ([`d2-race-live.ts:78-85`](../../../scripts/d2-race-live.ts#L78-L85)) both already do this. Both fail closed on unpriced models: [`worstCaseUsd`](../../../src/runner/d2-mission.ts#L98-L103) throws, and `createLiveTransport` calls it at [line 114](../../../scripts/d2-race-live.ts#L114), before the cap is consulted. So the $31.50 model can't get through the live race's transport.
+
+The remaining gap is a call that bills more than its reservation ([finding 07](07-max-tokens-not-a-true-ceiling.md)). The governor quarantines on `OVER_RESERVATION`. `SessionSpendCap` adds the overage without checking it, and the only guard is an after-the-fact assertion at line 262.
+
+### 2. In front of the key, as its only holder (new)
+
+A cap bounds only the spend that chooses to go through it. The gateway secret is a bearer credential in `.env`, and four scripts read it directly, each with its own rule or none:
+
+| Script | What stands between the secret and the network |
+| --- | --- |
+| `scripts/d2-race-live.ts` | `SessionSpendCap`, before dispatch |
+| `scripts/d2-calibrate.ts` | its own `HARD_CAP_USD` check, before each fetch |
+| `scripts/d1-gateway-inference.ts` | a $1 check at [line 32](../../../scripts/d1-gateway-inference.ts#L32), made **after** the response, when the money is already spent |
+| `scripts/raw-gateway-proof.ts` | nothing ([lines 12-18](../../../scripts/raw-gateway-proof.ts#L12-L18)) |
+
+The live race's naked agent was bounded only because the experimenter wrapped its transport. Its own code checks nothing, and [`d2-mission.ts:177`](../../../src/runner/d2-mission.ts#L177) counts a missing cost as $0.
+
+Any code that can read `process.env` has an uncapped key. That includes a new script, a dependency, or an agent tool reached by prompt injection. **Requirement:** a single custodian process holds the secret and offers dispatch as a capability. Agents and scripts never see the secret, and the breaker lives inside that custodian.
+
+### 3. Durable and account-scoped, not per process (new)
+
+`BudgetGovernor` keeps committed and reserved amounts in memory only ([`governor.ts:16-18`](../../../src/governor/governor.ts#L16-L18)). `ReservationLedger` reads its file back only to count lines ([`ledger.ts:15`](../../../src/governor/ledger.ts#L15)). From [`governor_cap_resets_on_restart.ts`](../repro/governor_cap_resets_on_restart.ts):
+
+```
+life 1: admitted=true governor committed=$0.90 real cumulative spend=$0.90
+...
+life 5: admitted=true governor committed=$0.90 real cumulative spend=$4.50
+ledger on disk: 10 events, $4.50 committed; each new governor still started at $0.00
+worker A admitted=true, worker B admitted=true: $1.80 reserved against a $1.00 budget
+REPRO RESULT: cap not durable: $4.50 spent over 5 restarts and $1.80 reserved by 2 governors, both against a $1.00 budget.
+```
+
+`SessionSpendCap` has the same property: it's rebuilt at [`d2-race-live.ts:216`](../../../scripts/d2-race-live.ts#L216) on every run. So "the $3.00 live-session ceiling" (`SENTINEL_D2_RUNNER.md`) is $3.00 per process, and each rerun of `npm run d2:race:live` gets a fresh $3.00.
+
+A crash-restart loop, a supervisor retrying a failed run, or a second worker building its own governor each multiplies the cap, and the gateway has none behind it. **Requirement:** one admission authority per Orbio account. It rebuilds committed spend and unexpired reservations from durable state before admitting anything, and refuses to start if it can't.
+
+### 4. Gating key minting, not only inference (new)
+
+Because `orbio_create_key` mints a fresh uncapped key against the same balance, revoking is not containment. The breaker's terminal state has to be "Sentinel stops asking": no further dispatch, **and no further mints**. So the custodian must be the only caller allowed to invoke `orbio_create_key`, and it must refuse to mint once tripped.
+
+### 5. Tripped by every unresolved key state
+
+Any `RECONCILIATION_FAILED`, any key orphaned by the paths in [finding 01](01-revoke-recovery-single-read-trust.md), and any recovery read that fails or times out means spend is currently unbounded. Each must trip the same fail-closed state as hitting the ceiling.
+
+## What no Sentinel-side breaker can beat
+
+- **The secret used outside the custodian.** If it is copied before custody exists (it's in `.env` today), it spends with no Sentinel check. Revoking or re-minting kills that copy. Custody shrinks the surface for future leaks but can't recall one that already happened.
+- **A leaked MCP OAuth grant.** Whoever holds it can call `orbio_create_key` at will and spend around any breaker Sentinel runs. Only a cap on the Orbio side, per account or per period, bounds that, and the gateway doesn't offer one. This is the residual risk to accept or escalate, not something D3 can close.
+
+## Measurements that would change or firm up this answer
+
+Nothing below was run. Each needs either access I don't have or real spend, so each needs Dola's go-ahead.
+
+1. **L, the lag between spend and the balance moving.** Read the balance with `orbio_get_balance`, make one call to `gpt-4.1-mini` with `max_tokens: 16` (about $0.0001), then poll the balance until it moves. This needs the authenticated MCP bridge. The gateway key alone can't read the balance.
+2. **Whether the gateway refuses a request above the remaining balance.** This is zero-cost if it does refuse. If it doesn't, the request bills real money. Run it only with an explicit dollar bound.
+3. **The gateway's concurrency and rate limits.** Probing these takes many paid calls. Recommend asking Orbio instead.
+
+## Reproductions
+
+All three run offline. They use no key, make no network calls and write no committed files.
+
+```bash
+npx tsx tests/adversarial/repro/drain_bound_from_measured_parameters.ts
+```
+
+Drain times and breaker timing from measured inputs. It reads `fixtures/sample-feed.jsonl` directly, and the price-list figures are recorded as dated constants.
+
+```bash
+npx tsx tests/adversarial/repro/governor_cap_resets_on_restart.ts
+```
+
+Requirement 3: the cap doesn't survive a restart and isn't shared between governors.
 
 ```bash
 npx tsx tests/adversarial/repro/balance_drain_race.ts
 ```
 
-**Scenario A — post-hoc "poll balance, then revoke" watchdog** (a naive shape D3's breaker could take if implemented as an external monitor):
-
-```
-t+157ms call#0 landed, balance=$95.08
-...
-t+158ms call#19 landed, balance=$0.08
-t+313ms call#20 landed, balance=$0.00
-...
-RESULT: balance drained from $100.08 to $0.00 before/around containment.
-```
-
-The balance hits **$0.00 at t+313ms** — the watchdog's first poll (`WATCHDOG_POLL_INTERVAL_MS = 1000`) hasn't even fired yet. It never gets an observation to act on. This holds for *any* poll interval competitive with human-scale monitoring (1s, 5s, even 250ms): the attacker's round trip and the watchdog's round trip are the same primitive, but the attacker gets to run many of them concurrently while the watchdog's decide→revoke path is inherently serial (read, decide, then a second round trip to revoke) and single-threaded against a many-way concurrent attacker.
-
-**Scenario B — pre-request local admission control**, where every call is checked against a locally-held running total *before* it is dispatched, with no round trip required to make that decision:
-
-```
-t+1ms call#2 BLOCKED pre-dispatch (committed=$10 + cost=$5 > ceiling=$10)
-...(16 more blocked at t+1ms)...
-t+248ms call#0 landed, balance=$95.08, committed=$10
-t+248ms call#1 landed, balance=$90.08, committed=$10
-RESULT: balance stopped at $90.08 (spent $10.00), 18 calls blocked before dispatch, ceiling=$10.
-```
-
-18 of 20 concurrent calls never leave the process. Total exposure is bounded by the ceiling plus at most one wave of already-in-flight calls (the two that were admitted before the ceiling was reached) — not by network latency at all.
-
-## Where the breaker must sit
-
-**In-process, synchronous, pre-request — not as an external or interval-based monitor of Orbio's own balance/telemetry.** Specifically:
-
-1. **Admission check before dispatch, not confirmation after the fact.** The breaker must maintain its own running total of *committed* spend, incremented at the moment a call is about to be dispatched (optimistically, before the response — even before the request — is sent), and refuse to dispatch once that total would exceed the ceiling. Any design that waits for `getBalance()` or `getKeyStatus()` to confirm spend before acting is racing against concurrency it structurally cannot win, because the confirmation channel is the same round-trip-latency channel the attacker is exploiting in parallel (Scenario A). This is also consistent with `docs/MCP_SURFACE.md`'s own caveat that live spend-proof-by-balance-read is unverified in production — the breaker cannot depend on a channel the project has already flagged as not fully trustworthy.
-
-2. **Account-scoped authority, not key-scoped.** Because a new key can always be minted against the same balance, "revoke the key" cannot be the breaker's terminal action. Once the local ceiling trips, the breaker must stop *itself* from issuing or authorizing any further calls or key creations for that account/session — the containment is "Sentinel stops asking," not "Orbio stops answering." If Orbio exposes no true account-level stop (nothing in `docs/MCP_SURFACE.md` suggests one exists), the breaker's job past that point is to fail closed (refuse to mint/use any further key) and escalate out-of-band, not to keep polling for a server-side guarantee that doesn't exist.
-
-3. **Tied to [Finding 1](01-revoke-recovery-single-read-trust.md)'s reconciliation state.** Any `RECONCILIATION_FAILED` (or the recovery-read fault that finding 1 shows can occur *without* even reaching that event) must immediately trip the same fail-closed state as hitting the spend ceiling — an unresolved revoke is functionally identical to "spend is currently unbounded," and should be treated with equal urgency, not treated as a softer, retriable condition.
-
-In short: the breaker beats the drain path only if it lives on the dispatch side of every `runInference` call, inside the same trust boundary that makes the call, enforcing a locally-owned ceiling that never depends on a round trip to Orbio to take effect.
+The 2026-09-07 timing model, kept for its illustration of post-hoc versus pre-dispatch. Its inputs are assumptions, and `drain_bound_from_measured_parameters.ts` replaces them.

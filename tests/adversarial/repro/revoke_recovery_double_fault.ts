@@ -12,9 +12,17 @@
 // revoke emits RECONCILIATION_FAILED" in docs/DAY1_FAILURE_MODES.md) silently loses
 // exactly the event class it exists to capture.
 //
+// Revised 2026-09-11: the previous version counted ledger lines with require() inside
+// an ES module (package.json has "type": "module"). The ReferenceError was swallowed
+// by its catch, so it printed "0 entries" while two were on disk. It also appended to
+// the tracked evidence/ file on every run, so any count would have accumulated across
+// runs. The ledger now goes to a fresh temp directory and the check lists event names.
+//
 // Run: npx tsx tests/adversarial/repro/revoke_recovery_double_fault.ts
 
-import { resolve } from "node:path";
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { LedgerWriter, type LedgerEventInput } from "../../../src/ledger/writer.js";
 import type { BalanceResult, GatewayKeyResult, GatewayKeyStatus, OrbioClient, SpendResult } from "../../../src/orbio/types.js";
 
@@ -37,7 +45,7 @@ class DoubleFaultOrbioClient implements OrbioClient {
   }
 }
 
-const ledgerPath = resolve(process.cwd(), "evidence", "adversarial-revoke-recovery-double-fault.jsonl");
+const ledgerPath = join(mkdtempSync(join(tmpdir(), "sentinel-adv-01-")), "adversarial-revoke-recovery-double-fault.jsonl");
 const ledger = new LedgerWriter(ledgerPath);
 function record(input: LedgerEventInput): void { ledger.append(input); }
 
@@ -73,22 +81,25 @@ async function main(): Promise<void> {
   const key = await client.createKey();
   record({ event: "KEY_CREATED", key_id: key.prefix, orbio_balance: null, orbio_spent: null, key_state: "active", reason: "d1_gateway_lifecycle", threshold: null, raw: key.raw });
 
-  console.log(`Ledger entries before recovery attempt: ${countLines(ledgerPath)}`);
+  console.log(`Ledger before recovery attempt: ${eventsOn(ledgerPath).join(", ") || "(empty)"}`);
   await recoveryBlock(client, before.balance, key.prefix);
   console.log("Recovery completed without raising — this should not print.");
 }
 
-function countLines(path: string): number {
+function eventsOn(path: string): string[] {
   try {
-    return require("node:fs").readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).length;
-  } catch { return 0; }
+    return readFileSync(path, "utf8").split(/\r?\n/).filter(Boolean).map((line) => (JSON.parse(line) as { event: string }).event);
+  } catch { return []; }
 }
 
 main()
   .then(() => { console.log("REPRO RESULT: recovery block returned normally (bug NOT reproduced)."); })
   .catch((error: unknown) => {
+    const events = eventsOn(ledgerPath);
     console.error("REPRO RESULT: uncaught exception escaped the recovery block, exactly as scripts/d1-lifecycle.ts's would:");
     console.error(`  ${error instanceof Error ? error.message : String(error)}`);
-    console.error(`Ledger entries after crash: ${countLines(ledgerPath)} (no RECONCILIATION_FAILED was written for this fault)`);
+    console.error(`Ledger after crash (${events.length} entries): ${events.join(", ")}`);
+    console.error(`RECONCILIATION_FAILED written for this fault: ${events.includes("RECONCILIATION_FAILED")}`);
+    console.error(`Ledger file: ${ledgerPath}`);
     process.exitCode = 1;
   });
