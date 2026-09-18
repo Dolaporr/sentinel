@@ -21,7 +21,7 @@ if (!apiKey) {
   );
 }
 
-const ENDPOINT = "https://www.orbio.so/api/v1/chat/completions";
+const ENDPOINT = "https://api.orbio.so/api/v1/chat/completions";
 const HARD_CAP_USD = 0.15;
 const timeoutMs = Number(process.env.D2_LIVE_TTL_MS ?? 180_000);
 

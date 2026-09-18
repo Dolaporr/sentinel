@@ -1,6 +1,6 @@
 import "dotenv/config";
-import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import type { GovernorEvent } from "../src/governor/types.js";
 import {
   CHEAP_MODEL,
@@ -30,8 +30,8 @@ if (!apiKey) {
   );
 }
 
-// Hardcoded, not env-overridable: the non-www host 308-redirects and drops the POST body.
-const ENDPOINT = "https://www.orbio.so/api/v1/chat/completions";
+// Orbio's currently documented OpenAI-compatible endpoint.
+const ENDPOINT = "https://api.orbio.so/api/v1/chat/completions";
 
 const sessionBudgetUsd = Number(process.env.D2_BUDGET_USD ?? SESSION_CEILING_USD);
 if (!Number.isFinite(sessionBudgetUsd) || sessionBudgetUsd <= 0 || sessionBudgetUsd > SESSION_CEILING_USD) {
@@ -48,6 +48,7 @@ const fixturePath = resolve(process.cwd(), "fixtures", "sample-feed.jsonl");
 
 interface LiveCall {
   ts: string;
+  intent_id: string;
   agent: string;
   model: string;
   prompt: string;
@@ -56,6 +57,16 @@ interface LiveCall {
   output_tokens: number | null;
   cost_source: "exact" | "estimated";
   status: number;
+}
+
+interface LiveIntent {
+  ts: string;
+  intent_id: string;
+  agent: string;
+  model: string;
+  prompt: string;
+  max_tokens: number;
+  worst_case_usd: number;
 }
 
 /**
@@ -107,12 +118,22 @@ class SessionSpendCap {
   }
 }
 
-function createLiveTransport(agent: string, cap: SessionSpendCap, calls: LiveCall[]): WorkerTransport {
+function createLiveTransport(agent: string, cap: SessionSpendCap, calls: LiveCall[], intents: LiveIntent[]): WorkerTransport {
   return {
     async complete(input) {
       const inputTokens = input.inputTokens ?? 0;
       const worst = worstCaseUsd(input.model, inputTokens, input.maxTokens);
       return cap.dispatch(worst, async () => {
+        // This is deliberately durable before fetch(). A connection can detach
+        // after the gateway accepts the request, leaving no response or usage;
+        // the fixture still records that Sentinel dispatched this exact call.
+        const intent: LiveIntent = {
+          ts: new Date().toISOString(), intent_id: crypto.randomUUID(), agent,
+          model: input.model, prompt: input.prompt.slice(0, 120),
+          max_tokens: input.maxTokens, worst_case_usd: worst
+        };
+        intents.push(intent);
+        appendDurableIntent(intent);
         const response = await fetch(ENDPOINT, {
           method: "POST",
           headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
@@ -139,7 +160,7 @@ function createLiveTransport(agent: string, cap: SessionSpendCap, calls: LiveCal
         const text = choice?.message?.content ?? "";
 
         calls.push({
-          ts: new Date().toISOString(), agent, model: input.model, prompt: input.prompt.slice(0, 120),
+          ts: new Date().toISOString(), intent_id: intent.intent_id, agent, model: input.model, prompt: input.prompt.slice(0, 120),
           max_tokens: input.maxTokens, cost, output_tokens: outputTokens,
           cost_source: cost === null ? "estimated" : "exact", status: response.status
         });
@@ -179,6 +200,44 @@ interface FeedEvent {
   mission_state: "complete" | "quarantined_unproductive" | null;
 }
 
+function intentEvent(intent: LiveIntent): Omit<FeedEvent, "seq"> {
+  return {
+    ts: intent.ts,
+    event: "INFERENCE_INTENT",
+    actor: "sentinel",
+    key_id: null,
+    orbio_balance: null,
+    orbio_spent: null,
+    key_state: "active",
+    reason: "pre_dispatch_durable_intent",
+    threshold: MISSION_BUDGET_USD,
+    raw: {
+      agent: intent.agent,
+      intent_id: intent.intent_id,
+      model: intent.model,
+      max_tokens: intent.max_tokens,
+      worst_case_usd: intent.worst_case_usd,
+      prompt_prefix: intent.prompt
+    },
+    reservation_id: null,
+    logical_call_id: null,
+    committed_exact: 0,
+    committed_estimated: 0,
+    reserved_total: intent.worst_case_usd,
+    cost_source: null,
+    reservation_safety_multiplier: RESERVATION_SAFETY_MULTIPLIER,
+    mission_state: null
+  };
+}
+
+let durableIntentSeq = 0;
+function appendDurableIntent(intent: LiveIntent): void {
+  const event: FeedEvent = { ...intentEvent(intent), seq: ++durableIntentSeq };
+  const serialized = JSON.stringify(event);
+  if (serialized.includes(apiKey!)) throw new Error("REFUSING TO WRITE: intent unexpectedly contains the API key.");
+  appendFileSync(fixturePath, `${serialized}\n`, "utf8");
+}
+
 function feedFromGovernor(events: readonly GovernorEvent[], agent: string): Omit<FeedEvent, "seq">[] {
   return events.map((event) => ({
     ts: event.ts,
@@ -215,22 +274,28 @@ function feedFromGovernor(events: readonly GovernorEvent[], agent: string): Omit
 
 const cap = new SessionSpendCap();
 const liveCalls: LiveCall[] = [];
+const liveIntents: LiveIntent[] = [];
+
+// A new recorded run replaces the prior fixture. From this point, every intent
+// is append-only until the final normalized feed is written on clean exit.
+mkdirSync(dirname(fixturePath), { recursive: true });
+writeFileSync(fixturePath, "", "utf8");
 
 console.log(`=== D2 LIVE RACE === session_cap=$${sessionBudgetUsd.toFixed(2)} mission_budget=$${MISSION_BUDGET_USD.toFixed(2)} endpoint=${ENDPOINT}`);
 
 console.log("\n--- [1/3] sentinel (cheap-routed, governed) ---");
-const sentinelTransport = createLiveTransport("sentinel", cap, liveCalls);
+const sentinelTransport = createLiveTransport("sentinel", cap, liveCalls, liveIntents);
 const sentinel = createSentinel("sentinel", sentinelTransport, liveTtlMs);
 const sentinelResult = await sentinel.worker.run(sentinelSteps);
 console.log(`sentinel done: completed=${sentinelResult.completed} committed_exact=$${sentinel.governor.snapshot().committedExact} committed_estimated=$${sentinel.governor.snapshot().committedEstimated}`);
 
 console.log("\n--- [2/3] governed-expensive (expensive model, governed) ---");
-const governedTransport = createLiveTransport("governed-expensive", cap, liveCalls);
+const governedTransport = createLiveTransport("governed-expensive", cap, liveCalls, liveIntents);
 const governedExpensive = await runGovernedExpensiveAgent(governedTransport, undefined, liveTtlMs);
 console.log(`governed-expensive done: died=${governedExpensive.died} refusal=${governedExpensive.refusal} on step=${governedExpensive.refused_step} spent=$${governedExpensive.spent_usd} remaining=$${governedExpensive.remaining_usd}`);
 
 console.log("\n--- [3/3] naked (expensive model, ungoverned) ---");
-const nakedTransport = createLiveTransport("naked", cap, liveCalls);
+const nakedTransport = createLiveTransport("naked", cap, liveCalls, liveIntents);
 const spentBeforeNaked = cap.snapshot().spent_usd;
 
 interface NakedCrashed {
@@ -273,6 +338,8 @@ if (session.spent_usd > sessionBudgetUsd) {
 const events: Omit<FeedEvent, "seq">[] = [];
 const push = (event: Omit<FeedEvent, "seq">) => { events.push(event); };
 
+for (const intent of liveIntents) push(intentEvent(intent));
+
 for (const call of liveCalls) {
   push({
     ts: call.ts,
@@ -286,6 +353,7 @@ for (const call of liveCalls) {
     threshold: MISSION_BUDGET_USD,
     raw: {
       agent: call.agent,
+      intent_id: call.intent_id,
       model: call.model,
       max_tokens: call.max_tokens,
       output_tokens: call.output_tokens,
