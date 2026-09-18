@@ -9,7 +9,7 @@
   "properties": {
     "ts": { "type": "string", "format": "date-time" },
     "seq": { "type": "integer", "minimum": 1 },
-    "event": { "type": "string", "enum": ["BALANCE_READ", "KEY_CREATED", "INFERENCE_CALL", "KEY_STATUS_READ", "KEY_REVOKED", "RECONCILIATION_FAILED", "RESERVATION_CREATED", "RESERVATION_EXPIRED", "COST_COMMITTED", "MODEL_REFUSED", "BUDGET_REFUSED", "OVER_RESERVATION", "LATE_RESULT_REJECTED", "MISSION_COMPLETE", "QUARANTINED_UNPRODUCTIVE"] },
+    "event": { "type": "string", "enum": ["BALANCE_READ", "KEY_CREATED", "INFERENCE_INTENT", "INFERENCE_CALL", "KEY_STATUS_READ", "KEY_REVOKED", "RECONCILIATION_FAILED", "RESERVATION_CREATED", "RESERVATION_EXPIRED", "COST_COMMITTED", "MODEL_REFUSED", "BUDGET_REFUSED", "OVER_RESERVATION", "LATE_RESULT_REJECTED", "MISSION_COMPLETE", "QUARANTINED_UNPRODUCTIVE"] },
     "actor": { "const": "sentinel" },
     "key_id": { "type": ["string", "null"] },
     "orbio_balance": { "type": ["number", "null"] },
