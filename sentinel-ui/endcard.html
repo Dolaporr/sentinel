@@ -1,0 +1,209 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Sentinel End Card</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+    html, body {
+      width: 1376px;
+      height: 776px;
+      background-color: #0B0D10;
+      color: #F1F3F5;
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      overflow: hidden;
+      -webkit-font-smoothing: antialiased;
+    }
+    .mono {
+      font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .container {
+      width: 1376px;
+      height: 776px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      border: 1px solid #212630;
+      background: radial-gradient(circle at 50% 45%, #141822 0%, #0B0D10 70%);
+    }
+    /* Top Header Strip matching Sentinel Telemetry header */
+    .header-bar {
+      height: 44px;
+      background-color: #0B0D10;
+      border-bottom: 1px solid #212630;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .brand-title {
+      font-weight: 600;
+      color: #F1F3F5;
+      letter-spacing: -0.01em;
+    }
+    .header-rule {
+      color: #6F7B8C;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .header-status {
+      font-size: 11px;
+      color: #47505E;
+    }
+
+    /* Center Content Area */
+    .center-stage {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 0 40px;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background-color: #171B22;
+      border: 1px solid #2B323F;
+      padding: 5px 12px;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #3B82F6;
+      letter-spacing: 0.08em;
+      margin-bottom: 22px;
+    }
+    .badge-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background-color: #3B82F6;
+    }
+    .hero-title {
+      font-size: 64px;
+      font-weight: 900;
+      letter-spacing: -0.035em;
+      color: #F1F3F5;
+      line-height: 1;
+      margin-bottom: 12px;
+    }
+    .hero-subtitle {
+      font-size: 20px;
+      font-weight: 500;
+      color: #98A5B6;
+      letter-spacing: -0.01em;
+      margin-bottom: 34px;
+    }
+
+    /* Middle Plate */
+    .feature-card {
+      background-color: #13161C;
+      border: 1px solid #212630;
+      border-radius: 8px;
+      padding: 22px 36px;
+      max-width: 820px;
+      margin-bottom: 32px;
+      box-shadow: 0 4px 24px rgba(0, 0, 0, 0.45);
+    }
+    .feature-line-1 {
+      font-size: 17px;
+      font-weight: 600;
+      color: #F1F3F5;
+      letter-spacing: -0.01em;
+      margin-bottom: 8px;
+    }
+    .feature-line-2 {
+      font-size: 14px;
+      color: #98A5B6;
+      letter-spacing: -0.01em;
+    }
+
+    /* Links row */
+    .links-row {
+      font-size: 15px;
+      color: #F1F3F5;
+      letter-spacing: -0.01em;
+    }
+    .links-row .sep {
+      color: #47505E;
+      margin: 0 10px;
+    }
+    .link-primary {
+      color: #3B82F6;
+      font-weight: 500;
+    }
+
+    /* Bottom Footer Bar */
+    .footer-bar {
+      height: 44px;
+      border-top: 1px solid #212630;
+      background-color: #0B0D10;
+      padding: 0 28px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 11px;
+      color: #6F7B8C;
+    }
+    .attribution {
+      color: #6F7B8C;
+    }
+    .footer-tag {
+      color: #47505E;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header-bar">
+      <div class="brand">
+        <span class="brand-title">Sentinel Telemetry</span>
+        <span style="color: #2B323F;">|</span>
+        <span class="header-rule">Controlled experiment &bull; openai/gpt-4.1 vs. admission control</span>
+      </div>
+      <div class="header-status mono">BENCHMARK REPORT // COMPLETE</div>
+    </div>
+
+    <div class="center-stage">
+      <div class="hero-badge mono">
+        <span class="badge-dot"></span>
+        ADMISSION CONTROL FOR AUTONOMOUS AGENTS
+      </div>
+
+      <h1 class="hero-title">SENTINEL</h1>
+      <p class="hero-subtitle">A spend governor for agents running on Orbio credits.</p>
+
+      <div class="feature-card">
+        <p class="feature-line-1">Every call admitted before dispatch. No network round-trip in the hot path.</p>
+        <p class="feature-line-2 mono">45 live calls &bull; real money &bull; full event ledger in the repo.</p>
+      </div>
+
+      <div class="links-row mono">
+        <span class="link-primary">github.com/&lt;handle&gt;/sentinel</span>
+        <span class="sep">&bull;</span>
+        <span>&lt;deployed-url&gt;</span>
+      </div>
+    </div>
+
+    <div class="footer-bar mono">
+      <div class="attribution">&ldquo;Crypto&rdquo; by Kevin MacLeod (incompetech.com) &bull; CC BY 4.0</div>
+      <div class="footer-tag">SENTINEL // TELEMETRY SUITE</div>
+    </div>
+  </div>
+</body>
+</html>

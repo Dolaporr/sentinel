@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://sentinel.orbio/contracts/feed.schema.json",
+  "title": "Sentinel gateway feed event",
+  "description": "Append-only Sentinel feed. Day 1 gateway fields remain stable; Day 2 governor fields extend the feed for reservations and costs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["ts", "seq", "event", "actor", "key_id", "orbio_balance", "orbio_spent", "key_state", "reason", "threshold", "raw"],
+  "properties": {
+    "ts": { "type": "string", "format": "date-time" },
+    "seq": { "type": "integer", "minimum": 1 },
+    "event": { "type": "string", "enum": ["BALANCE_READ", "KEY_CREATED", "INFERENCE_INTENT", "INFERENCE_CALL", "KEY_STATUS_READ", "KEY_REVOKED", "RECONCILIATION_FAILED", "RESERVATION_CREATED", "RESERVATION_EXPIRED", "COST_COMMITTED", "MODEL_REFUSED", "BUDGET_REFUSED", "OVER_RESERVATION", "LATE_RESULT_REJECTED", "MISSION_COMPLETE", "QUARANTINED_UNPRODUCTIVE"] },
+    "actor": { "const": "sentinel" },
+    "key_id": { "type": ["string", "null"] },
+    "orbio_balance": { "type": ["number", "null"] },
+    "orbio_spent": { "type": ["number", "null"] },
+    "key_state": { "type": ["string", "null"], "enum": ["active", "revoked", null] },
+    "reason": { "type": "string" },
+    "threshold": { "type": ["number", "null"] },
+    "raw": { "type": "object" },
+    "reservation_id": { "type": ["string", "null"] },
+    "logical_call_id": { "type": ["string", "null"] },
+    "committed_exact": { "type": "number", "minimum": 0 },
+    "committed_estimated": { "type": "number", "minimum": 0 },
+    "reserved_total": { "type": "number", "minimum": 0 },
+    "cost_source": { "type": ["string", "null"], "enum": ["exact", "estimated", null] },
+    "reservation_safety_multiplier": { "type": "number", "minimum": 1 },
+    "mission_state": { "type": ["string", "null"], "enum": ["complete", "quarantined_unproductive", null] }
+  }
+}

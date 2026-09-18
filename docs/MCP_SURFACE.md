@@ -5,11 +5,15 @@
 
 ## Product model discovered live
 
-The current Orbio key is a **gateway key**, not a funded OpenRouter key. It spends the live Orbio balance directly at `https://orbio.so/api/v1`; it has no credit limit of its own. Therefore `orbio_revoke_key` stops the key but does not return a balance, because no balance moved onto it.
+The current Orbio key is a **gateway key**, not a funded OpenRouter key. It spends the live Orbio balance through Orbio's OpenAI-compatible gateway; it has no credit limit of its own. Therefore `orbio_revoke_key` stops the key but does not return a balance, because no balance moved onto it.
 
 ## Gateway URL inconsistency — 2026-09-07
 
 The MCP has returned inconsistent non-canonical base hosts: an earlier `orbio_get_key_status`/`orbio_create_key` observation returned `https://orbio.so/api/v1`, while the 2026-09-07 raw proof returned `https://api.orbio.so/api/v1`. A raw `POST` to the former returned `308 Permanent Redirect` with `Location: https://www.orbio.so/api/v1/chat/completions` and body `Redirecting...`. A redirect is unsuitable for an inference POST because clients may not preserve the request body or authorization semantics. The direct OpenAI-compatible endpoint `https://www.orbio.so/api/v1/chat/completions` succeeded with HTTP 200; use it rather than the redirecting host. This contradicts the current MCP field and is recorded as a live surface inconsistency.
+
+### Current endpoint re-verification — 2026-09-17
+
+Orbio's public migration guide now specifies `https://api.orbio.so/api/v1`. The recorded Sentinel live race used `https://api.orbio.so/api/v1/chat/completions` and every one of its 45 calls returned HTTP 200 with `usage.cost`. The 2026-09-07 redirect observation remains historical evidence of a host transition; do not assume a prior host is still canonical for a new live run.
 
 `orbio_delete_key` is a legacy-only clean-up operation. It applies only to an account that still holds a pre-gateway provisioned OpenRouter key and returns that legacy key’s unspent amount.
 

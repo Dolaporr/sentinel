@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+body {
+  background-color: #0D0F12;
+  color: #F3F4F6;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  margin: 0;
+  padding: 0;
+}
+
+/* Tabular figures for telemetry readout */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Custom precision telemetry scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: #111419;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #232832;
+  border-radius: 2px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #363E4D;
+}
+
+/* Precision hairline rules */
+.rule-hairline-b {
+  border-bottom: 1px solid #232832;
+}
+
+.rule-hairline-r {
+  border-right: 1px solid #232832;
+}
+
+.rule-hairline-t {
+  border-top: 1px solid #232832;
+}
+
+.rule-hairline-l {
+  border-left: 1px solid #232832;
+}
