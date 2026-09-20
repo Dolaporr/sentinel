@@ -6,6 +6,14 @@
   "engines": {
     "node": ">=20"
   },
+  "bin": {
+    "sentinel-proxy": "bin/sentinel-proxy.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "tsconfig.json"
+  ],
   "scripts": {
     "d1": "tsx scripts/d1-lifecycle.ts",
     "d1:gateway-inference": "tsx scripts/d1-gateway-inference.ts",
@@ -17,15 +25,16 @@
     "proxy": "tsx src/proxy/server.ts",
     "proxy:verify": "tsx tests/proxy/verify.ts",
     "proxy:verify:live": "tsx tests/proxy/live-verify.ts",
-    "demo:call": "tsx scripts/demo-call.ts"
+    "demo:call": "tsx scripts/demo-call.ts",
+    "proxy:cli": "node bin/sentinel-proxy.mjs"
   },
   "dependencies": {
     "@openrouter/agent": "^0.11.0",
-    "dotenv": "^17.2.1"
+    "dotenv": "^17.2.1",
+    "tsx": "^4.20.5"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
-    "tsx": "^4.20.5",
     "typescript": "^5.9.3"
   }
 }
