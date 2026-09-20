@@ -3,13 +3,23 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
 import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governor/types.js";
-import { UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
+import { BIND_HOST, UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
 import { priceDrift, resolvePriceTable } from "./prices.js";
+import { DailySpendStore, resolveDailyBudget } from "./spend.js";
 import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
 
 const ROUTE = "/v1/chat/completions";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const round = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
+
+/**
+ * Upstream error bodies are echoed into our logs, and a gateway that reflects
+ * the submitted key in an error would otherwise write it to disk. The key is
+ * never logged deliberately; this is the accidental path.
+ */
+function redact(text: string, secret: string | undefined): string {
+  return secret && secret.length >= 8 ? text.split(secret).join("[redacted]") : text;
+}
 const usd = (value: number) => `$${value.toFixed(4)}`;
 
 /**
@@ -26,7 +36,7 @@ function worstCaseUsd(price: PriceEntry, inputTokens: number, maxTokens: number,
  * will surface to a human. Cursor and Codex print `error.message` verbatim, so
  * the message carries the numbers rather than a bare code.
  */
-function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: number; remaining: number; model: string }) {
+function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: number; remaining: number; model: string; unboundable: boolean }) {
   const shapes: Record<AdmissionRefusalReason, { type: string; code: string; message: string }> = {
     BUDGET_EXCEEDED: {
       type: "budget_exceeded",
@@ -35,8 +45,10 @@ function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: numbe
     },
     MODEL_UNPRICED: {
       type: "budget_exceeded",
-      code: "sentinel_model_unpriced",
-      message: `Sentinel refused: no verified price entry for ${context.model}, so its worst case is unknowable. Refusing rather than assuming a price.`
+      code: context.unboundable ? "sentinel_model_unboundable" : "sentinel_model_unpriced",
+      message: context.unboundable
+        ? `Sentinel refused ${context.model}: no per-token price - this model may bill per asset, so the budget can't bound it.`
+        : `Sentinel refused: no verified price entry for ${context.model}, so its worst case is unknowable. Refusing rather than assuming a price.`
     },
     QUARANTINED: {
       type: "budget_exceeded",
@@ -129,9 +141,14 @@ export class SentinelProxy {
   private readonly governor: BudgetGovernor;
   readonly ledger: ReservationLedger;
   private sweeper: ReturnType<typeof setInterval> | undefined;
+  private readonly spend: DailySpendStore;
+  /** Spend committed today before this process started. */
+  private readonly seeded: number;
 
   constructor(private readonly config: ProxyConfig) {
     this.ledger = new ReservationLedger(config.ledgerPath);
+    this.spend = new DailySpendStore(config.spendPath);
+    this.seeded = config.seededSpendUsd ?? 0;
     this.governor = new BudgetGovernor(
       {
         budgetUsd: config.budgetUsd,
@@ -146,6 +163,26 @@ export class SentinelProxy {
 
   snapshot() { return this.governor.snapshot(); }
 
+  /** Today's total: what was already committed when we started, plus ours. */
+  dailyCommittedUsd(): number {
+    const state = this.governor.snapshot();
+    return round(this.seeded + state.committedExact + state.committedEstimated);
+  }
+
+  /**
+   * Written after every commit, exact or estimated. A crash therefore loses at
+   * most the call in flight, rather than the whole session's spend.
+   */
+  private async commitExactAndPersist(attemptId: string, costUsd: number): Promise<void> {
+    await this.governor.commitExact(attemptId, costUsd);
+    this.spend.record(this.dailyCommittedUsd());
+  }
+
+  private async commitEstimatedAndPersist(attemptId: string, reason: string, outputTokens?: number): Promise<void> {
+    await this.governor.commitEstimated(attemptId, reason, outputTokens);
+    this.spend.record(this.dailyCommittedUsd());
+  }
+
   private remainingUsd(): number {
     const state = this.governor.snapshot();
     return round(state.budgetUsd - state.committedExact - state.committedEstimated - state.reservedTotal);
@@ -156,7 +193,7 @@ export class SentinelProxy {
     if (req.method === "GET" && url === "/healthz") {
       const state = this.governor.snapshot();
       sendJson(res, 200, {
-        status: state.quarantined ? "quarantined" : "ok",
+        status: this.config.capExceeded ? "daily_cap_reached" : state.quarantined ? "quarantined" : "ok",
         budget_usd: state.budgetUsd,
         committed_exact: state.committedExact,
         committed_estimated: state.committedEstimated,
@@ -164,6 +201,10 @@ export class SentinelProxy {
         remaining_usd: this.remainingUsd(),
         upstream: UPSTREAM_URL,
         key_configured: Boolean(this.config.apiKey),
+        daily_cap_usd: this.config.dailyCapUsd,
+        daily_committed_usd: this.dailyCommittedUsd(),
+        daily_remaining_usd: round(Math.max(0, this.config.dailyCapUsd - this.dailyCommittedUsd())),
+        daily_cap_reached: Boolean(this.config.capExceeded),
         price_source: this.config.priceSource ?? "static",
         price_verified_at: this.config.priceVerifiedAt ?? "unknown",
         priced_models: Object.keys(this.config.prices).length
@@ -201,6 +242,21 @@ export class SentinelProxy {
       return;
     }
 
+    // The daily cap is checked before the governor, because the governor's budget
+    // is only this process's slice of it and cannot speak to yesterday's spend.
+    if (this.config.capExceeded) {
+      const total = this.dailyCommittedUsd();
+      sendJson(res, 402, {
+        error: {
+          type: "budget_exceeded",
+          code: "sentinel_daily_cap_reached",
+          message: `Sentinel refused: today's spend ${usd(total)} has reached the daily cap ${usd(this.config.dailyCapUsd)}. The cap resets at local midnight.`,
+          param: null
+        }
+      }, { "x-sentinel-refusal": "DAILY_CAP_REACHED", "x-sentinel-daily-committed-usd": String(total) });
+      return;
+    }
+
     // §2 step 2: derived from the assembled messages, never declared.
     const inputTokens = deriveInputTokens(body);
 
@@ -222,7 +278,7 @@ export class SentinelProxy {
       const remaining = this.remainingUsd();
       const worstCaseLabel = Number.isFinite(worstCase) ? usd(worstCase) : "unpriced";
       console.log(`[refused] ${admission.reason} model=${model} worst_case=${worstCaseLabel} remaining=${usd(remaining)}`);
-      sendJson(res, 402, refusalBody(admission.reason, { worstCase, remaining, model }), {
+      sendJson(res, 402, refusalBody(admission.reason, { worstCase, remaining, model, unboundable: this.config.unboundableModels?.has(model) ?? false }), {
         "x-sentinel-refusal": admission.reason,
         "x-sentinel-worst-case-usd": Number.isFinite(worstCase) ? String(worstCase) : "unpriced",
         "x-sentinel-remaining-usd": String(remaining)
@@ -277,7 +333,7 @@ export class SentinelProxy {
       const reason = aborted ? "reservation_deadline_exceeded" : `dispatch_failed:${error instanceof Error ? error.name : "unknown"}`;
       // Nothing was streamed back, so no output was observed. Zero output tokens
       // still commits the input leg: never a silent release, never a silent zero.
-      await this.governor.commitEstimated(reservation.attemptId, reason, 0);
+      await this.commitEstimatedAndPersist(reservation.attemptId, reason, 0);
       console.error(`[${reason}] ${attemptId}: ${error instanceof Error ? error.message : String(error)}`);
       if (!res.headersSent) {
         sendJson(res, aborted ? 504 : 502, { error: { message: `Sentinel proxy could not complete the upstream call: ${reason}`, type: "api_error", code: reason, param: null } });
@@ -292,8 +348,8 @@ export class SentinelProxy {
   /** An upstream rejection generated no output, but the request is still resolved, not released. */
   private async settleUpstreamError(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>): Promise<void> {
     const text = await upstream.text();
-    await this.governor.commitEstimated(reservation.attemptId, `upstream_status:${upstream.status}`, 0);
-    console.error(`[upstream ${upstream.status}] ${reservation.attemptId}: ${text.slice(0, 200)}`);
+    await this.commitEstimatedAndPersist(reservation.attemptId, `upstream_status:${upstream.status}`, 0);
+    console.error(`[upstream ${upstream.status}] ${reservation.attemptId}: ${redact(text.slice(0, 200), this.config.apiKey)}`);
     res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
     res.end(text);
   }
@@ -312,12 +368,12 @@ export class SentinelProxy {
     } catch { /* fall through to the estimated path */ }
 
     if (cost !== null) {
-      await this.governor.commitExact(reservation.attemptId, cost);
+      await this.commitExactAndPersist(reservation.attemptId, cost);
       headers["x-sentinel-cost-source"] = "exact";
       headers["x-sentinel-cost-usd"] = String(cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)}`);
     } else {
-      await this.governor.commitEstimated(reservation.attemptId, "missing_usage_cost", outputTokens);
+      await this.commitEstimatedAndPersist(reservation.attemptId, "missing_usage_cost", outputTokens);
       headers["x-sentinel-cost-source"] = "estimated";
       console.log(`[committed estimated] ${reservation.attemptId} reason=missing_usage_cost output_tokens=${outputTokens ?? "unknown"}`);
     }
@@ -340,7 +396,7 @@ export class SentinelProxy {
     let cut: Error | null = null;
 
     if (!reader) {
-      await this.governor.commitEstimated(reservation.attemptId, "stream_without_body", 0);
+      await this.commitEstimatedAndPersist(reservation.attemptId, "stream_without_body", 0);
       res.end();
       return;
     }
@@ -359,13 +415,13 @@ export class SentinelProxy {
 
     const cost = accumulator.cost();
     if (cut === null && cost !== null) {
-      await this.governor.commitExact(reservation.attemptId, cost);
+      await this.commitExactAndPersist(reservation.attemptId, cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)} (stream)`);
     } else {
       // A cut stream still burned tokens, and a clean stream with no usage still
       // cost money. Estimate from what we actually saw; never a silent zero.
       const reason = cut ? "stream_cut" : accumulator.sawDone ? "stream_without_usage" : "stream_ended_without_done";
-      await this.governor.commitEstimated(reservation.attemptId, reason, accumulator.outputTokens());
+      await this.commitEstimatedAndPersist(reservation.attemptId, reason, accumulator.outputTokens());
       console.log(`[committed estimated] ${reservation.attemptId} reason=${reason} output_tokens=${accumulator.outputTokens()}`);
     }
     res.end();
@@ -383,14 +439,22 @@ export class SentinelProxy {
     // traffic an expired hold would keep occupying budget until the next request.
     this.sweeper = setInterval(() => { void this.governor.expire(); }, 5_000);
     this.sweeper.unref();
-    server.listen(this.config.port, () => {
-      console.log(`Sentinel proxy listening on http://127.0.0.1:${this.config.port}${ROUTE}`);
+    server.listen(this.config.port, BIND_HOST, () => {
+      console.log(`Sentinel proxy listening on http://${BIND_HOST}:${this.config.port}${ROUTE}`);
       console.log(`  upstream          ${UPSTREAM_URL}`);
       console.log(`  budget            ${usd(this.config.budgetUsd)} (safety x${this.config.reservationSafetyMultiplier})`);
+      console.log(`  daily cap         ${usd(this.config.dailyCapUsd)}, ${usd(this.dailyCommittedUsd())} already committed today`);
       console.log(`  reservation TTL   ${this.config.reservationTtlMs}ms`);
       console.log(`  default max_tokens ${this.config.defaultMaxTokens} (injected when the client sends none)`);
       console.log(`  price table       ${Object.keys(this.config.prices).length} models from ${this.config.priceSource ?? "static"} (verified ${this.config.priceVerifiedAt ?? "unknown"})`);
-      console.log(`  upstream key      ${this.config.apiKey ? "configured" : "MISSING - requests will be refused with 503"}`);
+      console.log(`  upstream key      ${this.config.apiKey ? "configured (held here, never forwarded to clients)" : "MISSING - requests will be refused with 503"}`);
+      console.log(`  client auth       none - loopback trust only, any bearer the client sends is discarded`);
+      if (this.config.capExceeded) {
+        console.warn("");
+        console.warn(`  *** DAILY CAP REACHED: ${usd(this.dailyCommittedUsd())} of ${usd(this.config.dailyCapUsd)} committed today.`);
+        console.warn(`  *** Every request is refused with HTTP 402 until local midnight.`);
+        console.warn(`  *** Restarting does not grant a fresh budget; the total is stored in ${this.config.spendPath}.`);
+      }
     });
     return server;
   }
@@ -407,14 +471,35 @@ export async function main(): Promise<void> {
   const table = await resolvePriceTable({ modelsUrl: base.modelsUrl, cachePath: base.priceCachePath });
 
   if (table.source === "gateway") {
-    console.log(`[prices] ${table.modelCount} models priced from the gateway (${table.skipped} skipped: no positive output price).`);
+    console.log(
+      `[prices] ${table.modelCount} models priced from the gateway ` +
+      `(${table.free} free, ${table.skipped} refused: no per-token price).`
+    );
   } else {
     console.warn(`[prices] using the ${table.source} table (${table.modelCount} models): ${table.note}`);
   }
 
   for (const line of priceDrift(table.prices)) console.warn(`[prices] DRIFT ${line}`);
 
-  new SentinelProxy({ ...base, prices: table.prices, priceSource: table.source, priceVerifiedAt: table.verifiedAt }).listen();
+  // Seed from today's stored total before the governor exists: its budget is the
+  // cap minus what today already spent, so a restart cannot hand back a fresh one.
+  const daily = resolveDailyBudget({
+    store: new DailySpendStore(base.spendPath),
+    dailyCapUsd: base.dailyCapUsd,
+    ceilingUsd: base.budgetUsd
+  });
+  console.log(`[spend] ${usd(daily.seededUsd)} committed on ${daily.date}; ${usd(Math.max(0, daily.capRemainingUsd))} of the ${usd(base.dailyCapUsd)} cap remains.`);
+
+  new SentinelProxy({
+    ...base,
+    prices: table.prices,
+    priceSource: table.source,
+    priceVerifiedAt: table.verifiedAt,
+    unboundableModels: table.unboundable,
+    seededSpendUsd: daily.seededUsd,
+    capExceeded: daily.capExceeded,
+    budgetUsd: daily.budgetUsd
+  }).listen();
 }
 
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;

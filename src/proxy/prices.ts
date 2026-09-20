@@ -10,8 +10,15 @@ export interface PriceTable {
   source: PriceSource;
   verifiedAt: string;
   modelCount: number;
-  /** Models the gateway listed but we refused to price. See rejectReasons. */
+  /** Models the gateway listed that cannot be bounded per token, so are refused. */
   skipped: number;
+  /** Models priced at zero because they are genuinely free (`:free`). */
+  free: number;
+  /**
+   * Ids the gateway offers that we refused to price. Kept so a refusal can say
+   * "this model bills per asset" rather than the misleading "unknown model".
+   */
+  unboundable: ReadonlySet<string>;
   note: string;
 }
 
@@ -27,38 +34,52 @@ interface GatewayModel { id?: unknown; pricing?: { prompt?: unknown; completion?
 const roundPrice = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
 /**
- * A price is usable only if both legs parse and the *output* leg is positive.
+ * The gateway lists ~178 models with a zero output price, and they are two very
+ * different things wearing the same number.
  *
- * A zero output price makes `max_tokens x outputPrice` zero, so the worst case
- * collapses to the input leg and every admission check for that model passes
- * against a bound that cannot bind. The gateway lists ~174 such models: free
- * tiers, and media models (video edit, transcription) that bill per second or
- * per asset rather than per token. Admitting those against a $0 ceiling is
- * exactly the systematic miscalibration described in adversarial finding 06,
- * and SENTINEL_D2_RUNNER.md 2.3 forbids a zero-cost default outright. They are
- * left out of the table, so the governor refuses them as MODEL_UNPRICED.
+ * An id ending `:free` is genuinely free. There is no spend to bound, so a zero
+ * reservation is the truth, not a missing price -- refusing it would look like a
+ * bug to anyone who picked a free model on purpose. 27 models.
+ *
+ * Everything else with a zero per-token price is the dangerous case: image,
+ * video and transcription models that bill per asset or per second. Their real
+ * cost is invisible to a per-token bound, so `max_tokens x 0` reports a $0
+ * worst case while real money is spent -- adversarial finding 06's systematic
+ * miscalibration, and the zero-cost default SENTINEL_D2_RUNNER.md 2.3 forbids
+ * outright. Those stay out of the table and are refused. 151 models.
  */
+export const isExplicitlyFree = (id: string) => id.endsWith(":free");
 function toPriceEntry(model: GatewayModel, verifiedAt: string): [string, PriceEntry] | null {
   if (typeof model.id !== "string" || !model.id) return null;
   const input = Number(model.pricing?.prompt);
   const output = Number(model.pricing?.completion);
   if (!Number.isFinite(input) || !Number.isFinite(output)) return null;
-  if (input < 0 || output <= 0) return null;
+  if (input < 0 || output < 0) return null;
+  // A free model prices at zero honestly; anything else at zero cannot be bounded.
+  if (output === 0 && !isExplicitlyFree(model.id)) return null;
   return [model.id, { inputPerMillionUsd: roundPrice(input * 1_000_000), outputPerMillionUsd: roundPrice(output * 1_000_000), verifiedAt }];
 }
 
-export function parseModelsResponse(payload: unknown, verifiedAt: string): { prices: Record<string, PriceEntry>; skipped: number } {
+export function parseModelsResponse(payload: unknown, verifiedAt: string): { prices: Record<string, PriceEntry>; skipped: number; free: number; unboundable: Set<string> } {
   const data = (payload as { data?: unknown })?.data;
   if (!Array.isArray(data)) throw new Error("models response has no `data` array");
   const prices: Record<string, PriceEntry> = {};
   let skipped = 0;
+  let free = 0;
+  const unboundable = new Set<string>();
   for (const model of data) {
     const entry = toPriceEntry(model as GatewayModel, verifiedAt);
-    if (entry) prices[entry[0]] = entry[1];
-    else skipped++;
+    if (!entry) {
+      skipped++;
+      const id = (model as GatewayModel).id;
+      if (typeof id === "string" && id) unboundable.add(id);
+      continue;
+    }
+    prices[entry[0]] = entry[1];
+    if (entry[1].outputPerMillionUsd === 0) free++;
   }
   if (Object.keys(prices).length === 0) throw new Error("models response yielded no usable prices");
-  return { prices, skipped };
+  return { prices, skipped, free, unboundable };
 }
 
 /**
@@ -88,6 +109,8 @@ function readCache(path: string): PriceTable | null {
       verifiedAt: parsed.verifiedAt ?? "unknown",
       modelCount: Object.keys(parsed.prices).length,
       skipped: 0,
+      free: Object.values(parsed.prices).filter((entry) => entry.outputPerMillionUsd === 0).length,
+      unboundable: new Set<string>(),
       note: `last known good table cached at ${parsed.verifiedAt ?? "unknown"}`
     };
   } catch { return null; }
@@ -115,10 +138,10 @@ export async function resolvePriceTable(options: { modelsUrl: string; cachePath:
       signal: AbortSignal.timeout(options.timeoutMs ?? 10_000)
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    const { prices, skipped } = parseModelsResponse(await response.json(), verifiedAt);
+    const { prices, skipped, free, unboundable } = parseModelsResponse(await response.json(), verifiedAt);
     const table: PriceTable = {
       prices, source: "gateway", verifiedAt,
-      modelCount: Object.keys(prices).length, skipped,
+      modelCount: Object.keys(prices).length, skipped, free, unboundable,
       note: `fetched from ${options.modelsUrl}`
     };
     writeCache(options.cachePath, table);
@@ -134,6 +157,8 @@ export async function resolvePriceTable(options: { modelsUrl: string; cachePath:
       verifiedAt: Object.values(staticPrices)[0]?.verifiedAt ?? "unknown",
       modelCount: Object.keys(staticPrices).length,
       skipped: 0,
+      free: 0,
+      unboundable: new Set<string>(),
       note: `hardcoded fallback after: ${reason}`
     };
   }

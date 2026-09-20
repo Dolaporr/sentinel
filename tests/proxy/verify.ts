@@ -29,11 +29,13 @@ function startStub(options: StubOptions = {}): Server {
     req.on("end", () => {
       lastUpstreamBody = JSON.parse(raw || "{}");
       const streaming = lastUpstreamBody.stream === true;
+      // A `:free` model really does bill zero; anything else carries a cost.
+      const cost = String(lastUpstreamBody.model ?? "").endsWith(":free") ? 0 : 0.000123;
       if (!streaming) {
         const body = JSON.stringify({
           id: "stub-1", object: "chat.completion", model: CHEAP_MODEL,
           choices: [{ index: 0, message: { role: "assistant", content: "hello from the stub" }, finish_reason: "stop" }],
-          usage: options.omitUsage ? { prompt_tokens: 12, completion_tokens: 5 } : { prompt_tokens: 12, completion_tokens: 5, cost: 0.000123 }
+          usage: options.omitUsage ? { prompt_tokens: 12, completion_tokens: 5 } : { prompt_tokens: 12, completion_tokens: 5, cost }
         });
         res.writeHead(200, { "content-type": "application/json" });
         res.end(body);
@@ -56,7 +58,7 @@ function startStub(options: StubOptions = {}): Server {
   return server;
 }
 
-function makeProxy(port: number, budgetUsd = 0.25) {
+function makeProxy(port: number, budgetUsd = 0.25, extra: Record<string, unknown> = {}) {
   return new SentinelProxy({
     port, budgetUsd,
     reservationTtlMs: 30_000,
@@ -69,7 +71,10 @@ function makeProxy(port: number, budgetUsd = 0.25) {
     modelsUrl: "http://127.0.0.1:9911/api/v1/models",
     priceCachePath: "/tmp/sentinel-verify-price-cache.json",
     priceSource: "static",
-    priceVerifiedAt: "test"
+    priceVerifiedAt: "test",
+    dailyCapUsd: 3,
+    spendPath: `/tmp/sentinel-verify-spend-${port}.json`,
+    ...extra
   });
 }
 
@@ -191,8 +196,8 @@ async function run() {
     ]
   };
   const parsed = parseModelsResponse(sample, "2026-09-20T00:00:00.000Z");
-  check("usable models kept", Object.keys(parsed.prices).sort().join(",") === "openai/gpt-4.1-mini,vendor/good", Object.keys(parsed.prices).join(","));
-  check("zero-output and unparseable models skipped", parsed.skipped === 3, String(parsed.skipped));
+  check("usable models kept", Object.keys(parsed.prices).sort().join(",") === "openai/gpt-4.1-mini,vendor/free-tier:free,vendor/good", Object.keys(parsed.prices).join(","));
+  check("unparseable and per-asset models skipped", parsed.skipped === 2, String(parsed.skipped));
   check("per-million conversion is exact, not 0.39999...", parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd === 0.4,
     String(parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd));
   check("no false drift against the hardcoded table", priceDrift(parsed.prices).filter((d) => d.includes("gpt-4.1-mini")).length === 0);
@@ -217,7 +222,108 @@ async function run() {
 
   const cached = await resolvePriceTable({ modelsUrl: unreachable, cachePath, timeoutMs: 500 });
   check("cache is used when the gateway later fails", cached.source === "cache", cached.source);
-  check("cached table has the models", Object.keys(cached.prices).length === 2, String(Object.keys(cached.prices).length));
+  check("cached table has the models", Object.keys(cached.prices).length === 3, String(Object.keys(cached.prices).length));
+
+  // --- 8. Free vs unboundable ----------------------------------------------
+  console.log("\n8. zero-output models split by whether they are genuinely free");
+  const freeSample = {
+    data: [
+      { id: "vendor/model:free", pricing: { prompt: "0", completion: "0" } },
+      { id: "black-forest-labs/flux-video-edit", pricing: { prompt: "0", completion: "0" } },
+      { id: "vendor/paid", pricing: { prompt: "0.000001", completion: "0.000002" } }
+    ]
+  };
+  const split = parseModelsResponse(freeSample, "2026-09-20T00:00:00.000Z");
+  check(":free model is priced at zero, not refused", split.prices["vendor/model:free"]?.outputPerMillionUsd === 0);
+  check("per-asset biller is refused", split.prices["black-forest-labs/flux-video-edit"] === undefined);
+  check("per-asset biller is recorded as unboundable", split.unboundable.has("black-forest-labs/flux-video-edit"));
+  check("free count reported", split.free === 1, String(split.free));
+
+  stub = startStub();
+  proxy = makeProxy(9907, 0.25, {
+    prices: { ...prices, "vendor/model:free": { inputPerMillionUsd: 0, outputPerMillionUsd: 0, verifiedAt: "test" } },
+    unboundableModels: new Set(["black-forest-labs/flux-video-edit"])
+  });
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9907, { model: "vendor/model:free", messages, max_tokens: 64 });
+  await res.text();
+  check(":free model admits through the proxy", res.status === 200, `got ${res.status}`);
+  check(":free model at zero cost does not quarantine", proxy.snapshot().quarantined === false);
+
+  res = await post(9907, { model: "black-forest-labs/flux-video-edit", messages, max_tokens: 64 });
+  body = await res.json() as { error: { type: string; code: string; message: string } };
+  check("per-asset biller refused 402", res.status === 402, `got ${res.status}`);
+  check("refusal code is sentinel_model_unboundable", body.error.code === "sentinel_model_unboundable", body.error.code);
+  check("message names the per-asset reason", body.error.message.includes("may bill per asset"), body.error.message);
+  server.close(); stub.close();
+
+  // A ":free" model that actually bills is an integrity violation, not a nit:
+  // we reserved $0 and were charged. The governor quarantines on over-reservation
+  // and we let it. Pinned here so the behaviour is known rather than discovered.
+  stub = startStub();
+  proxy = makeProxy(9910, 0.25, {
+    prices: { ...prices, "vendor/lying:free": { inputPerMillionUsd: 0, outputPerMillionUsd: 0, verifiedAt: "test" } }
+  });
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  // The stub bills anything whose id does not end in :free, so force a charge by
+  // pricing a normally-billed id at zero.
+  proxy_billed_free: {
+    const billed = await fetch(`http://127.0.0.1:9910/v1/chat/completions`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: CHEAP_MODEL, messages, max_tokens: 64 })
+    });
+    await billed.text();
+    break proxy_billed_free;
+  }
+  check("an ordinary billed call does not quarantine", proxy.snapshot().quarantined === false);
+  server.close(); stub.close();
+
+  // --- 9. Durable daily cap -------------------------------------------------
+  console.log("\n9. the daily cap survives a restart");
+  const { DailySpendStore, resolveDailyBudget, localDateKey } = await import("../../src/proxy/spend.js");
+  const spendPath = "/tmp/sentinel-verify-cap.json";
+  const fs = await import("node:fs");
+  try { fs.unlinkSync(spendPath); } catch { /* fresh run */ }
+
+  stub = startStub();
+  proxy = makeProxy(9908, 0.25, { spendPath });
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9908, { model: CHEAP_MODEL, messages, max_tokens: 64 });
+  await res.text();
+  await new Promise((r) => setTimeout(r, 100));
+  const persisted = JSON.parse(fs.readFileSync(spendPath, "utf8")) as { date: string; committed_usd: number };
+  check("commit persisted to disk", persisted.committed_usd === 0.000123, String(persisted.committed_usd));
+  check("persisted under today's local date", persisted.date === localDateKey());
+  server.close(); stub.close();
+
+  const seeded = resolveDailyBudget({ store: new DailySpendStore(spendPath), dailyCapUsd: 3, ceilingUsd: 3 });
+  check("restart seeds from the stored total", seeded.seededUsd === 0.000123, String(seeded.seededUsd));
+  check("budget is the cap minus today's spend", seeded.budgetUsd === 2.999877, String(seeded.budgetUsd));
+  check("not exceeded at this level", seeded.capExceeded === false);
+
+  fs.writeFileSync(spendPath, JSON.stringify({ date: localDateKey(), committed_usd: 5 }));
+  const over = resolveDailyBudget({ store: new DailySpendStore(spendPath), dailyCapUsd: 3, ceilingUsd: 3 });
+  check("cap exceeded when today's total is over", over.capExceeded === true);
+  check("governor budget stays positive so it can be constructed", over.budgetUsd > 0, String(over.budgetUsd));
+
+  fs.writeFileSync(spendPath, JSON.stringify({ date: "2020-01-01", committed_usd: 5 }));
+  const rolled = resolveDailyBudget({ store: new DailySpendStore(spendPath), dailyCapUsd: 3, ceilingUsd: 3 });
+  check("a record from another day does not carry forward", rolled.seededUsd === 0 && rolled.capExceeded === false);
+
+  stub = startStub();
+  proxy = makeProxy(9909, 0.25, { spendPath, seededSpendUsd: 5, capExceeded: true });
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9909, { model: CHEAP_MODEL, messages, max_tokens: 64 });
+  body = await res.json() as { error: { type: string; code: string; message: string } };
+  check("capped proxy refuses with 402", res.status === 402, `got ${res.status}`);
+  check("refusal code is sentinel_daily_cap_reached", body.error.code === "sentinel_daily_cap_reached", body.error.code);
+  const health = await (await fetch("http://127.0.0.1:9909/healthz")).json() as Record<string, unknown>;
+  check("/healthz reports the cap state", health.status === "daily_cap_reached" && health.daily_cap_reached === true);
+  server.close(); stub.close();
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);

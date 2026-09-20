@@ -1,4 +1,4 @@
-import { MISSION_BUDGET_USD, RESERVATION_SAFETY_MULTIPLIER, prices } from "../runner/d2-mission.js";
+import { RESERVATION_SAFETY_MULTIPLIER, SESSION_CEILING_USD, prices } from "../runner/d2-mission.js";
 import type { PriceEntry } from "../governor/types.js";
 
 /**
@@ -15,6 +15,13 @@ export const DEFAULT_UPSTREAM_URL = "https://www.orbio.so/api/v1/chat/completion
  * anywhere else and you are no longer testing the real gateway.
  */
 export const UPSTREAM_URL = process.env.SENTINEL_PROXY_UPSTREAM ?? DEFAULT_UPSTREAM_URL;
+
+/**
+ * Loopback only, and deliberately not configurable. The proxy holds the real
+ * gateway key; binding it to another interface would offer that key's spending
+ * power to the network. See docs/PROXY.md.
+ */
+export const BIND_HOST = "127.0.0.1";
 
 /** The price table's source. Derived from the upstream so both track one host. */
 export const MODELS_URL = process.env.SENTINEL_PROXY_MODELS_URL ?? UPSTREAM_URL.replace(/\/chat\/completions$/, "/models");
@@ -42,6 +49,15 @@ export interface ProxyConfig {
   /** Provenance of `prices`, surfaced on /healthz. Set once the table resolves. */
   priceSource?: string;
   priceVerifiedAt?: string;
+  /** Gateway ids that cannot be bounded per token, so a refusal can say why. */
+  unboundableModels?: ReadonlySet<string>;
+  /** The rolling daily ceiling. Survives restarts via spendPath. */
+  dailyCapUsd: number;
+  spendPath: string;
+  /** Spend already committed today when this process started. */
+  seededSpendUsd?: number;
+  /** True when today's total already met the cap before this process started. */
+  capExceeded?: boolean;
 }
 
 const int = (name: string, fallback: number): number => {
@@ -55,7 +71,11 @@ const int = (name: string, fallback: number): number => {
 export function loadConfig(): ProxyConfig {
   return {
     port: int("SENTINEL_PROXY_PORT", 8787),
-    budgetUsd: int("SENTINEL_PROXY_BUDGET_USD", MISSION_BUDGET_USD),
+    // Defaults to the daily cap: the cap is the real control for a proxy serving
+    // an interactive tool. Set it lower to bound a single proxy run more tightly.
+    budgetUsd: int("SENTINEL_PROXY_BUDGET_USD", int("SENTINEL_PROXY_DAILY_CAP_USD", SESSION_CEILING_USD)),
+    dailyCapUsd: int("SENTINEL_PROXY_DAILY_CAP_USD", SESSION_CEILING_USD),
+    spendPath: process.env.SENTINEL_PROXY_SPEND ?? ".cache/spend.json",
     // Generous next to the mission runner's 30s: a proxied request is driven by an
     // interactive tool, and an expired reservation would land a late result in the
     // governor's LATE_RESULT_REJECTED path and quarantine admissions.
