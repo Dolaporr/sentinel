@@ -121,7 +121,10 @@ function waitForExit(child: ChildProcess): Promise<void> {
 
 function startProxy(port: number, env: Record<string, string>): Promise<{ child: ChildProcess; banner: string }> {
   return new Promise((resolve, reject) => {
-    const child = spawn("npx", ["tsx", "src/proxy/server.ts"], {
+    // Spawned as a direct node child rather than through npx: on Windows npx is
+    // npx.cmd so a bare "npx" is ENOENT, and killing the wrapper there can leave
+    // the real node process alive still holding the port.
+    const child = spawn(process.execPath, ["--import", "tsx", "src/proxy/server.ts"], {
       env: { ...process.env, ORBIO_API_KEY: KEY, SENTINEL_PROXY_PORT: String(port), ...env },
       stdio: ["ignore", "pipe", "pipe"]
     });
