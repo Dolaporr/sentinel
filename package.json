@@ -13,7 +13,9 @@
     "d2:race:live": "tsx scripts/d2-race-live.ts",
     "test:d2": "tsx tests/unit/d2-governor.test.ts",
     "typecheck": "tsc --noEmit",
-    "d2:calibrate": "tsx scripts/d2-calibrate.ts"
+    "d2:calibrate": "tsx scripts/d2-calibrate.ts",
+    "proxy": "tsx src/proxy/server.ts",
+    "proxy:verify": "tsx tests/proxy/verify.ts"
   },
   "dependencies": {
     "@openrouter/agent": "^0.11.0",
