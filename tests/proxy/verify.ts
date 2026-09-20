@@ -48,7 +48,7 @@ function startStub(options: StubOptions = {}): Server {
       if (options.cut) { res.destroy(); return; }
       res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { content: "stub" }, finish_reason: "stop" }] }));
       if (!options.omitUsage) {
-        res.write(frame({ id: "stub-1", choices: [], usage: { prompt_tokens: 12, completion_tokens: 5, cost: 0.000456 } }));
+        res.write(frame({ id: "stub-1", choices: [], usage: { prompt_tokens: 12, completion_tokens: 5, cost: 0.0000456 } }));
       }
       res.write("data: [DONE]\n\n");
       res.end();
@@ -101,6 +101,7 @@ async function run() {
   check("body passed through untouched", JSON.parse(text).choices[0].message.content === "hello from the stub");
   check("committed_exact == 0.000123", proxy.snapshot().committedExact === 0.000123, String(proxy.snapshot().committedExact));
   check("reservation released", proxy.snapshot().reservedTotal === 0, String(proxy.snapshot().reservedTotal));
+  check("a normal call does not quarantine", proxy.snapshot().quarantined === false);
   server.close(); stub.close();
 
   // --- 2. Streaming passes through and reads usage from the tail ------------
@@ -116,8 +117,9 @@ async function run() {
     JSON.stringify((lastUpstreamBody.stream_options as Record<string, unknown>) ?? {}) === JSON.stringify({ include_usage: true }));
   check("client saw the SSE deltas", text.includes("hello ") && text.includes("stub"));
   check("client saw [DONE]", text.includes("[DONE]"));
-  check("committed_exact == 0.000456", proxy.snapshot().committedExact === 0.000456, String(proxy.snapshot().committedExact));
+  check("committed_exact == 0.0000456", proxy.snapshot().committedExact === 0.0000456, String(proxy.snapshot().committedExact));
   check("nothing committed as estimated", proxy.snapshot().committedEstimated === 0);
+  check("a normal streamed call does not quarantine", proxy.snapshot().quarantined === false);
   server.close(); stub.close();
 
   // --- 3. Cut stream still commits, as an estimate --------------------------
@@ -258,26 +260,30 @@ async function run() {
   check("message names the per-asset reason", body.error.message.includes("may bill per asset"), body.error.message);
   server.close(); stub.close();
 
-  // A ":free" model that actually bills is an integrity violation, not a nit:
-  // we reserved $0 and were charged. The governor quarantines on over-reservation
-  // and we let it. Pinned here so the behaviour is known rather than discovered.
+  // A model advertised free that actually bills is an integrity violation: we
+  // reserved $0 and were charged. The governor quarantines, and the refusal has
+  // to say what happened and how to resume.
   stub = startStub();
   proxy = makeProxy(9910, 0.25, {
-    prices: { ...prices, "vendor/lying:free": { inputPerMillionUsd: 0, outputPerMillionUsd: 0, verifiedAt: "test" } }
+    prices: { ...prices, "vendor/lying": { inputPerMillionUsd: 0, outputPerMillionUsd: 0, verifiedAt: "test" } }
   });
   server = proxy.listen();
   await new Promise((r) => setTimeout(r, 150));
-  // The stub bills anything whose id does not end in :free, so force a charge by
-  // pricing a normally-billed id at zero.
-  proxy_billed_free: {
-    const billed = await fetch(`http://127.0.0.1:9910/v1/chat/completions`, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ model: CHEAP_MODEL, messages, max_tokens: 64 })
-    });
-    await billed.text();
-    break proxy_billed_free;
-  }
-  check("an ordinary billed call does not quarantine", proxy.snapshot().quarantined === false);
+  res = await post(9910, { model: "vendor/lying", messages, max_tokens: 64 });
+  await res.text();
+  await new Promise((r) => setTimeout(r, 100));
+  check("a zero-priced model that bills quarantines", proxy.snapshot().quarantined === true);
+
+  res = await post(9910, { model: CHEAP_MODEL, messages, max_tokens: 64 });
+  body = await res.json() as { error: { type: string; code: string; message: string } };
+  check("next call refused as quarantined", body.error.code === "sentinel_quarantined", body.error.code);
+  check("message names the offending model", body.error.message.includes("vendor/lying"), body.error.message);
+  check("message states what it was advertised at", body.error.message.includes("advertised at $0.0000/M"));
+  check("message states what was reserved", body.error.message.includes("reserved $0.000000"));
+  check("message states what was actually billed", body.error.message.includes("billed $0.000123"));
+  check("message says how to resume", body.error.message.includes("Restart the proxy to refetch prices"));
+  const qhealth = await (await fetch("http://127.0.0.1:9910/healthz")).json() as Record<string, unknown>;
+  check("/healthz carries the same explanation", String(qhealth.quarantine_reason ?? "").includes("vendor/lying"));
   server.close(); stub.close();
 
   // --- 9. Durable daily cap -------------------------------------------------

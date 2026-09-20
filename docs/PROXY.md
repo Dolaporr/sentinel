@@ -182,8 +182,19 @@ table's fallback chain and the daily cap against a local stub gateway.
   measured figure.
 - **A `:free` model that actually bills will quarantine the proxy.** It reserved
   `$0` and was charged, which the governor treats as an over-reservation and an
-  integrity fault. That is the intended fail-closed response, but it halts
-  admissions until restart.
+  integrity fault. That is the intended fail-closed response, and it halts
+  admissions until restart. The refusal says which model, what it was advertised
+  at, what it actually billed, and that restarting refetches prices:
+
+  > Sentinel has halted admissions: vendor/lying was advertised at $0.0000/M
+  > output, so the call reserved $0.000000 — but it billed $0.000123, more than
+  > was reserved. The price table is wrong for this model, so no further call
+  > can be bounded correctly. Restart the proxy to refetch prices from the
+  > gateway and resume.
+
+  `/healthz` carries the same text as `quarantine_reason`. A late result — one
+  arriving after its reservation was settled — quarantines through the other
+  door and explains itself the same way.
 - **Input tokens are estimated, not counted.** The estimate over-counts on
   purpose. Non-text content (images, audio) is counted as its serialized JSON,
   which is a guess; those requests reserve a number that is not derived from

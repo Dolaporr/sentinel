@@ -21,6 +21,33 @@ function redact(text: string, secret: string | undefined): string {
   return secret && secret.length >= 8 ? text.split(secret).join("[redacted]") : text;
 }
 const usd = (value: number) => `$${value.toFixed(4)}`;
+const usd6 = (value: number) => `$${value.toFixed(6)}`;
+const perMillion = (value: number) => `$${value.toFixed(4)}/M`;
+
+/**
+ * Why admissions stopped. A quarantined proxy refuses everything until it is
+ * restarted, so the refusal has to carry enough to act on: which call broke the
+ * accounting, what the table promised, what was actually charged.
+ */
+export interface QuarantineCause {
+  kind: "over_reservation" | "late_result";
+  model: string;
+  reservedUsd: number;
+  billedUsd: number | null;
+  outputPerMillionUsd: number;
+  attemptId: string;
+}
+
+function quarantineMessage(cause: QuarantineCause | null): string {
+  const resume = "Restart the proxy to refetch prices from the gateway and resume.";
+  if (!cause) {
+    return `Sentinel has halted admissions after a ledger integrity fault, and cannot bound any further call until it is reset. ${resume}`;
+  }
+  if (cause.kind === "late_result") {
+    return `Sentinel has halted admissions: a result for ${cause.model} arrived after its reservation had already expired or been settled, so ${usd6(cause.reservedUsd)} of budget was accounted twice. Further calls cannot be bounded correctly. ${resume}`;
+  }
+  return `Sentinel has halted admissions: ${cause.model} was advertised at ${perMillion(cause.outputPerMillionUsd)} output, so the call reserved ${usd6(cause.reservedUsd)} — but it billed ${usd6(cause.billedUsd ?? 0)}, more than was reserved. The price table is wrong for this model, so no further call can be bounded correctly. ${resume}`;
+}
 
 /**
  * Mirrors BudgetGovernor.estimateWorstCase, which is private. The proxy needs the
@@ -36,7 +63,7 @@ function worstCaseUsd(price: PriceEntry, inputTokens: number, maxTokens: number,
  * will surface to a human. Cursor and Codex print `error.message` verbatim, so
  * the message carries the numbers rather than a bare code.
  */
-function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: number; remaining: number; model: string; unboundable: boolean }) {
+function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: number; remaining: number; model: string; unboundable: boolean; quarantineCause: QuarantineCause | null }) {
   const shapes: Record<AdmissionRefusalReason, { type: string; code: string; message: string }> = {
     BUDGET_EXCEEDED: {
       type: "budget_exceeded",
@@ -53,7 +80,7 @@ function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: numbe
     QUARANTINED: {
       type: "budget_exceeded",
       code: "sentinel_quarantined",
-      message: `Sentinel refused: admissions are quarantined after a ledger integrity fault. Restart the proxy after reconciling.`
+      message: quarantineMessage(context.quarantineCause)
     },
     DUPLICATE_ATTEMPT: {
       type: "budget_exceeded",
@@ -144,6 +171,8 @@ export class SentinelProxy {
   private readonly spend: DailySpendStore;
   /** Spend committed today before this process started. */
   private readonly seeded: number;
+  /** Set the moment admissions halt, so the refusal can explain itself. */
+  private quarantineCause: QuarantineCause | null = null;
 
   constructor(private readonly config: ProxyConfig) {
     this.ledger = new ReservationLedger(config.ledgerPath);
@@ -173,14 +202,35 @@ export class SentinelProxy {
    * Written after every commit, exact or estimated. A crash therefore loses at
    * most the call in flight, rather than the whole session's spend.
    */
-  private async commitExactAndPersist(attemptId: string, costUsd: number): Promise<void> {
-    await this.governor.commitExact(attemptId, costUsd);
+  private async commitExactAndPersist(reservation: Reservation, costUsd: number): Promise<void> {
+    const accepted = await this.governor.commitExact(reservation.attemptId, costUsd);
+    this.noteQuarantine(reservation, accepted, costUsd);
     this.spend.record(this.dailyCommittedUsd());
   }
 
-  private async commitEstimatedAndPersist(attemptId: string, reason: string, outputTokens?: number): Promise<void> {
-    await this.governor.commitEstimated(attemptId, reason, outputTokens);
+  private async commitEstimatedAndPersist(reservation: Reservation, reason: string, outputTokens?: number): Promise<void> {
+    const accepted = await this.governor.commitEstimated(reservation.attemptId, reason, outputTokens);
+    this.noteQuarantine(reservation, accepted, null);
     this.spend.record(this.dailyCommittedUsd());
+  }
+
+  /**
+   * The governor quarantines through two doors: a cost above its reservation,
+   * and a result arriving after its slot was gone. Both stop the proxy dead, so
+   * both record what happened rather than leaving the next caller to guess.
+   */
+  private noteQuarantine(reservation: Reservation, accepted: boolean, costUsd: number | null): void {
+    if (!this.governor.snapshot().quarantined || this.quarantineCause) return;
+    const kind = accepted ? "over_reservation" : "late_result";
+    this.quarantineCause = {
+      kind,
+      model: reservation.model,
+      reservedUsd: reservation.amountUsd,
+      billedUsd: costUsd,
+      outputPerMillionUsd: reservation.outputPerMillionUsd,
+      attemptId: reservation.attemptId
+    };
+    console.error(`[QUARANTINED] ${quarantineMessage(this.quarantineCause)}`);
   }
 
   private remainingUsd(): number {
@@ -205,6 +255,7 @@ export class SentinelProxy {
         daily_committed_usd: this.dailyCommittedUsd(),
         daily_remaining_usd: round(Math.max(0, this.config.dailyCapUsd - this.dailyCommittedUsd())),
         daily_cap_reached: Boolean(this.config.capExceeded),
+        quarantine_reason: state.quarantined ? quarantineMessage(this.quarantineCause) : null,
         price_source: this.config.priceSource ?? "static",
         price_verified_at: this.config.priceVerifiedAt ?? "unknown",
         priced_models: Object.keys(this.config.prices).length
@@ -278,7 +329,11 @@ export class SentinelProxy {
       const remaining = this.remainingUsd();
       const worstCaseLabel = Number.isFinite(worstCase) ? usd(worstCase) : "unpriced";
       console.log(`[refused] ${admission.reason} model=${model} worst_case=${worstCaseLabel} remaining=${usd(remaining)}`);
-      sendJson(res, 402, refusalBody(admission.reason, { worstCase, remaining, model, unboundable: this.config.unboundableModels?.has(model) ?? false }), {
+      sendJson(res, 402, refusalBody(admission.reason, {
+        worstCase, remaining, model,
+        unboundable: this.config.unboundableModels?.has(model) ?? false,
+        quarantineCause: this.quarantineCause
+      }), {
         "x-sentinel-refusal": admission.reason,
         "x-sentinel-worst-case-usd": Number.isFinite(worstCase) ? String(worstCase) : "unpriced",
         "x-sentinel-remaining-usd": String(remaining)
@@ -333,7 +388,7 @@ export class SentinelProxy {
       const reason = aborted ? "reservation_deadline_exceeded" : `dispatch_failed:${error instanceof Error ? error.name : "unknown"}`;
       // Nothing was streamed back, so no output was observed. Zero output tokens
       // still commits the input leg: never a silent release, never a silent zero.
-      await this.commitEstimatedAndPersist(reservation.attemptId, reason, 0);
+      await this.commitEstimatedAndPersist(reservation, reason, 0);
       console.error(`[${reason}] ${attemptId}: ${error instanceof Error ? error.message : String(error)}`);
       if (!res.headersSent) {
         sendJson(res, aborted ? 504 : 502, { error: { message: `Sentinel proxy could not complete the upstream call: ${reason}`, type: "api_error", code: reason, param: null } });
@@ -348,7 +403,7 @@ export class SentinelProxy {
   /** An upstream rejection generated no output, but the request is still resolved, not released. */
   private async settleUpstreamError(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>): Promise<void> {
     const text = await upstream.text();
-    await this.commitEstimatedAndPersist(reservation.attemptId, `upstream_status:${upstream.status}`, 0);
+    await this.commitEstimatedAndPersist(reservation, `upstream_status:${upstream.status}`, 0);
     console.error(`[upstream ${upstream.status}] ${reservation.attemptId}: ${redact(text.slice(0, 200), this.config.apiKey)}`);
     res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
     res.end(text);
@@ -368,12 +423,12 @@ export class SentinelProxy {
     } catch { /* fall through to the estimated path */ }
 
     if (cost !== null) {
-      await this.commitExactAndPersist(reservation.attemptId, cost);
+      await this.commitExactAndPersist(reservation, cost);
       headers["x-sentinel-cost-source"] = "exact";
       headers["x-sentinel-cost-usd"] = String(cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)}`);
     } else {
-      await this.commitEstimatedAndPersist(reservation.attemptId, "missing_usage_cost", outputTokens);
+      await this.commitEstimatedAndPersist(reservation, "missing_usage_cost", outputTokens);
       headers["x-sentinel-cost-source"] = "estimated";
       console.log(`[committed estimated] ${reservation.attemptId} reason=missing_usage_cost output_tokens=${outputTokens ?? "unknown"}`);
     }
@@ -396,7 +451,7 @@ export class SentinelProxy {
     let cut: Error | null = null;
 
     if (!reader) {
-      await this.commitEstimatedAndPersist(reservation.attemptId, "stream_without_body", 0);
+      await this.commitEstimatedAndPersist(reservation, "stream_without_body", 0);
       res.end();
       return;
     }
@@ -415,13 +470,13 @@ export class SentinelProxy {
 
     const cost = accumulator.cost();
     if (cut === null && cost !== null) {
-      await this.commitExactAndPersist(reservation.attemptId, cost);
+      await this.commitExactAndPersist(reservation, cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)} (stream)`);
     } else {
       // A cut stream still burned tokens, and a clean stream with no usage still
       // cost money. Estimate from what we actually saw; never a silent zero.
       const reason = cut ? "stream_cut" : accumulator.sawDone ? "stream_without_usage" : "stream_ended_without_done";
-      await this.commitEstimatedAndPersist(reservation.attemptId, reason, accumulator.outputTokens());
+      await this.commitEstimatedAndPersist(reservation, reason, accumulator.outputTokens());
       console.log(`[committed estimated] ${reservation.attemptId} reason=${reason} output_tokens=${accumulator.outputTokens()}`);
     }
     res.end();
