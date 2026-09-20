@@ -16,6 +16,9 @@ export const DEFAULT_UPSTREAM_URL = "https://www.orbio.so/api/v1/chat/completion
  */
 export const UPSTREAM_URL = process.env.SENTINEL_PROXY_UPSTREAM ?? DEFAULT_UPSTREAM_URL;
 
+/** The price table's source. Derived from the upstream so both track one host. */
+export const MODELS_URL = process.env.SENTINEL_PROXY_MODELS_URL ?? UPSTREAM_URL.replace(/\/chat\/completions$/, "/models");
+
 export interface ProxyConfig {
   port: number;
   budgetUsd: number;
@@ -32,6 +35,13 @@ export interface ProxyConfig {
   defaultMaxTokens: number;
   apiKey: string | undefined;
   ledgerPath: string | undefined;
+  /** Where the live price table is fetched from at startup. */
+  modelsUrl: string;
+  /** Last known good price table, used when the gateway fetch fails. */
+  priceCachePath: string;
+  /** Provenance of `prices`, surfaced on /healthz. Set once the table resolves. */
+  priceSource?: string;
+  priceVerifiedAt?: string;
 }
 
 const int = (name: string, fallback: number): number => {
@@ -55,6 +65,8 @@ export function loadConfig(): ProxyConfig {
     prices,
     defaultMaxTokens: int("SENTINEL_PROXY_DEFAULT_MAX_TOKENS", 1_024),
     apiKey: process.env.ORBIO_API_KEY ?? process.env.OPENROUTER_API_KEY,
-    ledgerPath: process.env.SENTINEL_PROXY_LEDGER
+    ledgerPath: process.env.SENTINEL_PROXY_LEDGER,
+    modelsUrl: MODELS_URL,
+    priceCachePath: process.env.SENTINEL_PROXY_PRICE_CACHE ?? ".cache/price-table.json"
   };
 }

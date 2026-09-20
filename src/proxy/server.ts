@@ -4,6 +4,7 @@ import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
 import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governor/types.js";
 import { UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
+import { priceDrift, resolvePriceTable } from "./prices.js";
 import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
 
 const ROUTE = "/v1/chat/completions";
@@ -162,7 +163,10 @@ export class SentinelProxy {
         reserved_total: state.reservedTotal,
         remaining_usd: this.remainingUsd(),
         upstream: UPSTREAM_URL,
-        key_configured: Boolean(this.config.apiKey)
+        key_configured: Boolean(this.config.apiKey),
+        price_source: this.config.priceSource ?? "static",
+        price_verified_at: this.config.priceVerifiedAt ?? "unknown",
+        priced_models: Object.keys(this.config.prices).length
       });
       return;
     }
@@ -385,12 +389,33 @@ export class SentinelProxy {
       console.log(`  budget            ${usd(this.config.budgetUsd)} (safety x${this.config.reservationSafetyMultiplier})`);
       console.log(`  reservation TTL   ${this.config.reservationTtlMs}ms`);
       console.log(`  default max_tokens ${this.config.defaultMaxTokens} (injected when the client sends none)`);
-      console.log(`  priced models     ${Object.keys(this.config.prices).join(", ")}`);
+      console.log(`  price table       ${Object.keys(this.config.prices).length} models from ${this.config.priceSource ?? "static"} (verified ${this.config.priceVerifiedAt ?? "unknown"})`);
       console.log(`  upstream key      ${this.config.apiKey ? "configured" : "MISSING - requests will be refused with 503"}`);
     });
     return server;
   }
 }
 
+/**
+ * The governor is constructed with the price table, so the table has to resolve
+ * before the server exists. A model missing from it is refused, so sourcing it
+ * from the gateway rather than the hardcoded pair is what makes the proxy usable
+ * by a real client.
+ */
+export async function main(): Promise<void> {
+  const base = loadConfig();
+  const table = await resolvePriceTable({ modelsUrl: base.modelsUrl, cachePath: base.priceCachePath });
+
+  if (table.source === "gateway") {
+    console.log(`[prices] ${table.modelCount} models priced from the gateway (${table.skipped} skipped: no positive output price).`);
+  } else {
+    console.warn(`[prices] using the ${table.source} table (${table.modelCount} models): ${table.note}`);
+  }
+
+  for (const line of priceDrift(table.prices)) console.warn(`[prices] DRIFT ${line}`);
+
+  new SentinelProxy({ ...base, prices: table.prices, priceSource: table.source, priceVerifiedAt: table.verifiedAt }).listen();
+}
+
 const isEntrypoint = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
-if (isEntrypoint) new SentinelProxy(loadConfig()).listen();
+if (isEntrypoint) await main();

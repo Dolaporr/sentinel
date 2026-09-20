@@ -4,3 +4,4 @@ node_modules/
 dist/
 evidence/*.jsonl
 !evidence/.gitkeep
+.cache/

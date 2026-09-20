@@ -65,7 +65,11 @@ function makeProxy(port: number, budgetUsd = 0.25) {
     prices,
     defaultMaxTokens: 1_024,
     apiKey: "stub-key",
-    ledgerPath: undefined
+    ledgerPath: undefined,
+    modelsUrl: "http://127.0.0.1:9911/api/v1/models",
+    priceCachePath: "/tmp/sentinel-verify-price-cache.json",
+    priceSource: "static",
+    priceVerifiedAt: "test"
   });
 }
 
@@ -172,6 +176,48 @@ async function run() {
   check("unpriced model refused 402", res.status === 402, `got ${res.status}`);
   check("unpriced model code", body.error.code === "sentinel_model_unpriced", body.error.code);
   server.close(); stub.close();
+
+  // --- 7. Price table sourcing ---------------------------------------------
+  console.log("\n7. price table is sourced from the gateway, with a fallback chain");
+  const { parseModelsResponse, priceDrift, resolvePriceTable } = await import("../../src/proxy/prices.js");
+
+  const sample = {
+    data: [
+      { id: "openai/gpt-4.1-mini", pricing: { prompt: "0.0000004", completion: "0.0000016" } },
+      { id: "vendor/free-tier:free", pricing: { prompt: "0", completion: "0" } },
+      { id: "vendor/video-edit", pricing: { prompt: "0", completion: "0" } },
+      { id: "vendor/broken", pricing: { prompt: "not-a-number", completion: "0.0001" } },
+      { id: "vendor/good", pricing: { prompt: "0.000001", completion: "0.000002" } }
+    ]
+  };
+  const parsed = parseModelsResponse(sample, "2026-09-20T00:00:00.000Z");
+  check("usable models kept", Object.keys(parsed.prices).sort().join(",") === "openai/gpt-4.1-mini,vendor/good", Object.keys(parsed.prices).join(","));
+  check("zero-output and unparseable models skipped", parsed.skipped === 3, String(parsed.skipped));
+  check("per-million conversion is exact, not 0.39999...", parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd === 0.4,
+    String(parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd));
+  check("no false drift against the hardcoded table", priceDrift(parsed.prices).filter((d) => d.includes("gpt-4.1-mini")).length === 0);
+  check("a real price change is reported as drift",
+    priceDrift({ "openai/gpt-4.1-mini": { inputPerMillionUsd: 0.9, outputPerMillionUsd: 1.6, verifiedAt: "x" } }).some((d) => d.includes("0.9")));
+
+  const cachePath = "/tmp/sentinel-verify-chain.json";
+  try { (await import("node:fs")).unlinkSync(cachePath); } catch { /* fresh run */ }
+  const unreachable = "http://127.0.0.1:9/api/v1/models";
+  const staticTable = await resolvePriceTable({ modelsUrl: unreachable, cachePath, timeoutMs: 500 });
+  check("unreachable gateway with no cache falls back to static", staticTable.source === "static", staticTable.source);
+
+  const stubModels = createServer((_req, res) => {
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(sample));
+  });
+  stubModels.listen(9912);
+  await new Promise((r) => setTimeout(r, 150));
+  const live = await resolvePriceTable({ modelsUrl: "http://127.0.0.1:9912/models", cachePath, timeoutMs: 2_000 });
+  check("reachable gateway is used", live.source === "gateway", live.source);
+  stubModels.close();
+
+  const cached = await resolvePriceTable({ modelsUrl: unreachable, cachePath, timeoutMs: 500 });
+  check("cache is used when the gateway later fails", cached.source === "cache", cached.source);
+  check("cached table has the models", Object.keys(cached.prices).length === 2, String(Object.keys(cached.prices).length));
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
