@@ -183,6 +183,11 @@ forced refusal. It aborts above $0.05 and runs under its own $0.10 cap.
 A run against the live gateway is recorded in
 [docs/PROXY_VERIFICATION.md](PROXY_VERIFICATION.md).
 
+`npm run --silent demo:call` sends one real completion through a running proxy
+and prints three lines — model, cost, remaining budget — or the refusal message
+if the governor says no. Use `--silent` so npm's own header lines stay out of
+the output.
+
 ---
 
 ## Known limitations
