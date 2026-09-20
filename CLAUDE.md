@@ -10,6 +10,7 @@ It exists so that Codex and Claude Code are never both free to edit the same par
 
 - Claude Code's implementation lane is `src/proxy/`. It owns that directory.
 - Work happens on `feat/proxy`. Do not commit to `main`.
+  By scope-owner decision on 2026-09-20, `feat/proxy` was merged to `main`; that authorisation covered that merge only and the rule stands otherwise.
 - `src/governor/` is off-limits. The proxy consumes `BudgetGovernor` through its existing
   public API only (`reserve`, `commitExact`, `commitEstimated`, `expire`, `snapshot`,
   `assertStepFitsBudget`). It does not modify governor internals or the ledger.
