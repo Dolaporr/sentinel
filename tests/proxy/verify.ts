@@ -331,6 +331,30 @@ async function run() {
   check("/healthz reports the cap state", health.status === "daily_cap_reached" && health.daily_cap_reached === true);
   server.close(); stub.close();
 
+  // --- 10. Input-token estimate vs real prompt_tokens -----------------------
+  console.log("\n10. the input estimate covers chat-template overhead");
+  const { deriveInputTokens, chatTemplateOverhead } = await import("../../src/proxy/messages.js");
+
+  // The exact request from docs/PROXY_VERIFICATION.md, whose live response
+  // reported prompt_tokens: 23 against an estimate of 18 before this correction.
+  const liveMessages = [{ role: "user", content: "Count from 1 to 20. One number per line, nothing else." }];
+  const liveEstimate = deriveInputTokens({ model: CHEAP_MODEL, messages: liveMessages });
+  check("covers the live-measured prompt_tokens of 23", liveEstimate >= 23, String(liveEstimate));
+  check("errs high rather than exact-fitting one sample", liveEstimate === 24, String(liveEstimate));
+  check("still within 10% of the real figure", (liveEstimate - 23) / 23 < 0.1, String((liveEstimate - 23) / 23));
+
+  // The failure mode being fixed: overhead scales with message count, so a flat
+  // correction fitted to one message drifts further off with every added turn.
+  const oneTurn = deriveInputTokens({ model: CHEAP_MODEL, messages: [{ role: "user", content: "hello" }] });
+  const sixTurns = deriveInputTokens({
+    model: CHEAP_MODEL,
+    messages: Array.from({ length: 6 }, () => ({ role: "user", content: "hello" }))
+  });
+  const perMessageGrowth = (sixTurns - oneTurn) / 5;
+  check("overhead grows per message, not once", perMessageGrowth > 3, String(perMessageGrowth));
+  check("chatTemplateOverhead is per-message plus priming", chatTemplateOverhead(4) === 15, String(chatTemplateOverhead(4)));
+  check("an empty message list still prices the reply priming", deriveInputTokens({ model: CHEAP_MODEL, messages: [] }) === 3);
+
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);
 }

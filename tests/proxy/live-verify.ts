@@ -261,9 +261,18 @@ async function main(): Promise<void> {
     out.push(``);
     out.push(`### Was \`stream_options: {include_usage: true}\` honoured?`);
     out.push(``);
+    // Do not report costSource here: it is always absent on a streamed response,
+    // because headers flush before the terminating chunk is read. Interpolating
+    // it printed "committed the cost as `null`", a false statement in a document
+    // whose whole value is being generated. State what the stream itself shows.
     out.push(proxyStream.usageSeen
-      ? `**Yes.** The gateway returned a \`usage\` object on the terminating chunk, and the proxy committed the cost as \`${proxyStream.costSource}\`.`
-      : `**No.** The gateway returned no \`usage\` in the stream, so the proxy fell back to an estimate from observed output and reported \`${proxyStream.costSource}\`. This is the documented fallback, not a failure.`);
+      ? `**Yes.** The gateway returned a \`usage\` object on the terminating chunk, carrying \`cost: ${usd(proxyStream.cost)}\`, so the proxy commits a streamed call as exact rather than estimated.`
+      : `**No.** The gateway returned no \`usage\` in the stream, so the proxy falls back to an estimate from observed output size. This is the documented fallback, not a failure.`);
+    out.push(``);
+    out.push(`\`x-sentinel-cost-source\` is absent on streamed responses regardless of the`);
+    out.push(`answer above: response headers flush before the stream ends, so the cost is`);
+    out.push(`not known in time to set it. Confirm which way a streamed call settled from`);
+    out.push(`\`committed_exact\` and \`committed_estimated\` in the \`/healthz\` section below.`);
     out.push(``);
     out.push(`First 600 characters of the raw stream through the proxy:`);
     out.push(``);

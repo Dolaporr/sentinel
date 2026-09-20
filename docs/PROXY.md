@@ -180,6 +180,9 @@ per-chunk arrival times proving the stream is passed through progressively rathe
 than buffered, wall clock through the proxy against direct, `/healthz`, and a
 forced refusal. It aborts above $0.05 and runs under its own $0.10 cap.
 
+A run against the live gateway is recorded in
+[docs/PROXY_VERIFICATION.md](PROXY_VERIFICATION.md).
+
 ---
 
 ## Known limitations
@@ -203,12 +206,30 @@ forced refusal. It aborts above $0.05 and runs under its own $0.10 cap.
   `/healthz` carries the same text as `quarantine_reason`. A late result — one
   arriving after its reservation was settled — quarantines through the other
   door and explains itself the same way.
-- **Input tokens are estimated, not counted.** The estimate over-counts on
-  purpose. Non-text content (images, audio) is counted as its serialized JSON,
-  which is a guess; those requests reserve a number that is not derived from
-  what the gateway will actually price.
+- **Input tokens are estimated, not counted, and the correction is proxy-local.**
+  The proxy adds chat-template overhead — 3 tokens per message plus 3 for reply
+  priming — on top of `estimateTokens`, because the gateway prices a rendered
+  chat template whose delimiter and role tokens never appear in the message
+  text. The constants are calibrated against one live response
+  (`prompt_tokens: 23` against a raw estimate of 18) and are biased high: that
+  request now estimates 24.
+
+  **This correction lives in `src/proxy/messages.ts` only.** `estimateTokens` in
+  `src/runner/` is unchanged and still under-counts real `prompt_tokens` by
+  roughly 20% for anything that calls it directly — the mission runner and the
+  calibration script both do. Its own documentation says it over-counts and
+  "errs high"; measured against a live response, it does not. Correcting it
+  there would change the D2 runner's reservations, which is Codex's lane.
+
+  Non-text content (images, audio) is still counted as its serialized JSON,
+  which is a guess; those requests reserve a number not derived from what the
+  gateway will actually price.
 - **The cap is per-machine.** See above.
-- **`stream_options: {include_usage: true}` is requested, not confirmed.**
-  Whether the gateway honours it has not been verified against a live key. If it
-  does not, streamed calls fall back to an estimate from observed output rather
-  than an exact cost.
+- **A streamed response does not report its cost source.** `x-sentinel-cost-source`
+  is set on non-streaming responses but is absent on streamed ones: headers
+  flush before the stream begins, so the cost is not known in time. A streaming
+  client cannot tell an exact cost from an estimated one; only `committed_exact`
+  versus `committed_estimated` on `/healthz` shows it. Measured 2026-09-20: the
+  gateway does honour `stream_options: {include_usage: true}`, so streamed calls
+  currently commit as exact — this is a reporting gap, not an accounting one,
+  until a stream is cut.
