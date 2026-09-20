@@ -1,5 +1,6 @@
 import "dotenv/config";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { pathToFileURL } from "node:url";
 import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
 import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governor/types.js";
@@ -557,5 +558,8 @@ export async function main(): Promise<void> {
   }).listen();
 }
 
-const isEntrypoint = process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`;
+// pathToFileURL, not a `file://` template: on Windows argv[1] is a backslashed
+// drive path, so the naive form never matches import.meta.url and the proxy
+// would exit 0 without ever listening.
+const isEntrypoint = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 if (isEntrypoint) await main();
