@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PriceEntry } from "../governor/types.js";
-import { prices as staticPrices } from "../runner/d2-mission.js";
+import { prices as staticPrices } from "./mission-constants.js";
 
 export type PriceSource = "gateway" | "cache" | "static";
 

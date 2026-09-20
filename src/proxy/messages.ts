@@ -1,4 +1,4 @@
-import { estimateTokens } from "../runner/d2-mission.js";
+import { estimateTokens } from "./mission-constants.js";
 
 /** The subset of the OpenAI chat-completions body the governor needs to price. */
 export interface ChatCompletionRequest {

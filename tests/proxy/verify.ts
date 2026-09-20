@@ -8,6 +8,18 @@
  */
 import { createServer, type Server } from "node:http";
 import { prices, CHEAP_MODEL, RESERVATION_SAFETY_MULTIPLIER } from "../../src/runner/d2-mission.js";
+// The proxy deliberately keeps its own copy of these so it never imports the
+// mission runner, whose corpus is read from process.cwd() at load time. This
+// test runs from the repo root, where both resolve, so it is the right place
+// to catch the two drifting apart.
+import {
+  prices as proxyPrices,
+  CHEAP_MODEL as PROXY_CHEAP_MODEL,
+  RESERVATION_SAFETY_MULTIPLIER as PROXY_SAFETY,
+  SESSION_CEILING_USD as PROXY_CEILING,
+  estimateTokens as proxyEstimateTokens
+} from "../../src/proxy/mission-constants.js";
+import { SESSION_CEILING_USD, estimateTokens } from "../../src/runner/d2-mission.js";
 
 process.env.SENTINEL_PROXY_UPSTREAM ??= "http://127.0.0.1:9911/api/v1/chat/completions";
 const { SentinelProxy } = await import("../../src/proxy/server.js");
@@ -354,6 +366,15 @@ async function run() {
   check("overhead grows per message, not once", perMessageGrowth > 3, String(perMessageGrowth));
   check("chatTemplateOverhead is per-message plus priming", chatTemplateOverhead(4) === 15, String(chatTemplateOverhead(4)));
   check("an empty message list still prices the reply priming", deriveInputTokens({ model: CHEAP_MODEL, messages: [] }) === 3);
+  // --- proxy/runner constant drift ------------------------------------------
+  console.log("");
+  console.log("shared constants still match src/runner/d2-mission.ts");
+  check("SESSION_CEILING_USD matches", PROXY_CEILING === SESSION_CEILING_USD);
+  check("RESERVATION_SAFETY_MULTIPLIER matches", PROXY_SAFETY === RESERVATION_SAFETY_MULTIPLIER);
+  check("CHEAP_MODEL matches", PROXY_CHEAP_MODEL === CHEAP_MODEL);
+  check("static price table matches", JSON.stringify(proxyPrices) === JSON.stringify(prices));
+  const driftSample = "the quick brown fox jumps over the lazy dog, repeatedly";
+  check("estimateTokens matches", proxyEstimateTokens(driftSample) === estimateTokens(driftSample));
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);

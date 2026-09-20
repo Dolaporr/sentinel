@@ -1,4 +1,4 @@
-import { RESERVATION_SAFETY_MULTIPLIER, SESSION_CEILING_USD, prices } from "../runner/d2-mission.js";
+import { RESERVATION_SAFETY_MULTIPLIER, SESSION_CEILING_USD, prices } from "./mission-constants.js";
 import type { PriceEntry } from "../governor/types.js";
 
 /**
