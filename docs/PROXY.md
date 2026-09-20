@@ -170,7 +170,15 @@ machine, in one `.env`.
 | `SENTINEL_PROXY_LEDGER` | unset | append governor events to this JSONL path |
 
 `npm run proxy:verify` exercises the route, streaming, cut streams, the price
-table's fallback chain and the daily cap against a local stub gateway.
+table's fallback chain and the daily cap against a local stub gateway. No key,
+no network, no spend.
+
+`npm run proxy:verify:live` does the same against the **real gateway with a real
+key**, and writes `docs/PROXY_VERIFICATION.md` from what it observed: the startup
+banner, cost source and real cost for a non-streaming and a streamed completion,
+per-chunk arrival times proving the stream is passed through progressively rather
+than buffered, wall clock through the proxy against direct, `/healthz`, and a
+forced refusal. It aborts above $0.05 and runs under its own $0.10 cap.
 
 ---
 
