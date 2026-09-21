@@ -104,7 +104,12 @@ Direct, for comparison:
 
 ### Was `stream_options: {include_usage: true}` honoured?
 
-**Yes.** The gateway returned a `usage` object on the terminating chunk, and the proxy committed the cost as `null`.
+**Yes.** The gateway returned a `usage` object on the terminating chunk with
+`cost: $0.000073`. The post-run health snapshot reports
+`committed_exact: 0.0002928` and `committed_estimated: 0`, consistent with this
+stream settling as an exact cost rather than an estimate. The streamed response
+cannot carry `x-sentinel-cost-source`: its headers were already flushed before
+the terminating usage chunk arrived.
 
 First 600 characters of the raw stream through the proxy:
 

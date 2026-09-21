@@ -31,7 +31,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) failures++;
 };
 
-interface StubOptions { cut?: boolean; omitUsage?: boolean }
+interface StubOptions { cut?: boolean; omitUsage?: boolean; toolCalls?: boolean }
 let lastUpstreamBody: Record<string, unknown> = {};
 
 function startStub(options: StubOptions = {}): Server {
@@ -55,6 +55,22 @@ function startStub(options: StubOptions = {}): Server {
       }
       res.writeHead(200, { "content-type": "text/event-stream" });
       const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+      if (options.toolCalls) {
+        res.write(frame({
+          id: "stub-tool-call", choices: [{ index: 0, delta: {
+            role: "assistant", tool_calls: [{ index: 0, id: "call_lookup", type: "function", function: { name: "lookup", arguments: "{\"query\":\"" } }]
+          } }]
+        }));
+        res.write(frame({
+          id: "stub-tool-call", choices: [{ index: 0, delta: {
+            tool_calls: [{ index: 0, function: { arguments: "incident\"}" } }]
+          }, finish_reason: "tool_calls" }]
+        }));
+        if (!options.omitUsage) res.write(frame({ id: "stub-tool-call", choices: [], usage: { prompt_tokens: 12, completion_tokens: 8, cost: 0.0000456 } }));
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
       res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { role: "assistant", content: "hello " } }] }));
       res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { content: "from the " } }] }));
       if (options.cut) { res.destroy(); return; }
@@ -114,6 +130,39 @@ async function run() {
   check("committed_exact == 0.000123", proxy.snapshot().committedExact === 0.000123, String(proxy.snapshot().committedExact));
   check("reservation released", proxy.snapshot().reservedTotal === 0, String(proxy.snapshot().reservedTotal));
   check("a normal call does not quarantine", proxy.snapshot().quarantined === false);
+  server.close(); stub.close();
+
+  // --- 1b. OpenAI request fields pass through unchanged ---------------------
+  console.log("\n1b. tools, tool_choice, and response_format pass through unchanged");
+  const tools = [{ type: "function", function: { name: "lookup", description: "Look up an incident.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } }];
+  const toolChoice = { type: "function", function: { name: "lookup" } };
+  const responseFormat = { type: "json_schema", json_schema: { name: "incident_summary", strict: true, schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } } };
+  stub = startStub();
+  proxy = makeProxy(9913);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9913, { model: CHEAP_MODEL, messages, max_tokens: 64, tools, tool_choice: toolChoice, response_format: responseFormat });
+  await res.text();
+  check("tools passed through unchanged", JSON.stringify(lastUpstreamBody.tools) === JSON.stringify(tools));
+  check("tool_choice passed through unchanged", JSON.stringify(lastUpstreamBody.tool_choice) === JSON.stringify(toolChoice));
+  check("response_format passed through unchanged", JSON.stringify(lastUpstreamBody.response_format) === JSON.stringify(responseFormat));
+  server.close(); stub.close();
+
+  // --- 1c. Streamed tool calls are not collapsed or buffered ----------------
+  console.log("\n1c. streamed tool_calls pass through unchanged");
+  stub = startStub({ toolCalls: true });
+  proxy = makeProxy(9914);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9914, { model: CHEAP_MODEL, messages, max_tokens: 64, stream: true, tools, tool_choice: toolChoice });
+  text = await res.text();
+  check("streamed request retained tools", JSON.stringify(lastUpstreamBody.tools) === JSON.stringify(tools));
+  check("client saw tool_calls deltas", text.includes("\"tool_calls\"") && text.includes("\"call_lookup\""));
+  check("client saw streamed tool arguments", text.includes("{\\\"query\\\":\\\"") && text.includes("incident\\\"}"));
+  check("client saw tool_calls finish reason", text.includes("\"finish_reason\":\"tool_calls\""));
+  check("streamed tool call committed exactly", proxy.snapshot().committedExact === 0.0000456 && proxy.snapshot().committedEstimated === 0);
+  const models = await fetch("http://127.0.0.1:9914/v1/models");
+  check("GET /v1/models is explicitly unsupported until the proxy implements it", models.status === 404, `got ${models.status}`);
   server.close(); stub.close();
 
   // --- 2. Streaming passes through and reads usage from the tail ------------

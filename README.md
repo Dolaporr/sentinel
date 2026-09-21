@@ -74,9 +74,14 @@ These are stated because the project's whole argument is about not overclaiming.
 
 ## Where it goes
 
-Today Sentinel is a library: your agent imports the governor. That only governs agents you write.
+Sentinel now ships a **local OpenAI-compatible proxy** that holds the key and
+puts the governor in front of every chat-completions request. It is a single
+custodian process rather than a library convention; the tool receives only a
+throwaway local token while the real Orbio key remains in the proxy.
 
-The next step is a **local proxy** — the same governor behind an OpenAI-compatible endpoint, holding the key. Point Claude Code, Cursor, Codex or anything with a configurable base URL at it, and every call passes through admission control without the tool knowing. That is also what the adversarial review concluded the breaker has to become: a single custodian that holds the secret and offers dispatch as a capability.
+The proxy's verified surface, limitations, and configuration are in
+[`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
+not claimed until each has completed a real request through it.
 
 ---
 

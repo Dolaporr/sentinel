@@ -1,9 +1,10 @@
 # The Sentinel proxy
 
 An OpenAI-compatible endpoint that holds the gateway key and puts the budget
-governor in front of it. Point any tool with a configurable base URL at it —
-Cursor, Codex, Claude Code — and every call passes through admission control
-without the tool knowing.
+governor in front of it. It is shipped and accepts chat-completions traffic from
+clients with a configurable base URL. Editor and agent integrations must be
+verified individually before being claimed; compatibility is not an endorsement
+that Cursor, Codex, or Claude Code has completed a real request through it.
 
 ```
 npm run proxy
@@ -14,6 +15,26 @@ Base URL   http://127.0.0.1:8787/v1
 Route      POST /v1/chat/completions
 Health     GET  /healthz
 ```
+
+## Client compatibility — 2026-09-21
+
+Verified against the real gateway: a direct OpenAI-compatible `POST
+/v1/chat/completions` request, including streamed responses with a terminating
+`usage.cost` chunk. The generated record is
+[`PROXY_VERIFICATION.md`](PROXY_VERIFICATION.md).
+
+Verified locally against a stub: request fields `tools`, `tool_choice`, and
+`response_format` are forwarded unchanged; streamed `tool_calls` deltas and
+their arguments are forwarded progressively and settle exactly when the stream
+includes `usage.cost`.
+
+Not verified for release: Cursor, Codex, Claude Code, the OpenAI SDK, and any
+client that requires model discovery. Do not claim them as supported yet.
+
+`GET /v1/models` is **not implemented** in this build; it returns the proxy's
+404 route response. The proxy has an already-resolved price table internally,
+but exposing it is a `src/proxy/` implementation task and is intentionally not
+papered over here.
 
 The API key the client sends is ignored, so anything non-empty works.
 
