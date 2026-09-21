@@ -46,7 +46,7 @@ export const PlaybackControls: React.FC<PlaybackControlsProps> = ({
   const speeds = [0.5, 1, 2, 5, 10];
 
   return (
-    <div className="bg-ledger-plate border-y border-ledger-border px-4 lg:px-6 py-2.5 select-none shrink-0">
+    <div className="bg-ledger-plate border-y border-ledger-border px-4 lg:px-6 py-2.5 select-none shrink-0 animate-fade-in delay-75">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-2.5">
         {/* Play/Pause, Rewind, and Quick Jumps */}
         <div className="flex items-center space-x-2 shrink-0">
@@ -60,23 +60,28 @@ export const PlaybackControls: React.FC<PlaybackControlsProps> = ({
 
           <button
             onClick={onTogglePlay}
-            className={`px-3.5 py-1.5 rounded text-xs font-mono font-semibold flex items-center space-x-1.5 transition cursor-pointer ${
+            aria-label={isPlaying ? 'Pause telemetry playback' : 'Play telemetry playback'}
+            title={isPlaying ? 'Pause playback (Space)' : 'Start playback (Space)'}
+            className={`group relative flex items-center space-x-2 pl-2 pr-3.5 py-1.5 rounded-full text-xs font-mono font-semibold transition-all duration-200 cursor-pointer shadow-sm ${
               isPlaying
-                ? 'bg-chassis border border-ledger-subtle text-argent hover:border-rule'
-                : 'bg-argent text-chassis hover:bg-white'
+                ? 'bg-chassis border border-ledger-subtle text-argent hover:border-rule hover:bg-ledger'
+                : 'bg-argent text-chassis hover:bg-white hover:shadow-md hover:scale-[1.02]'
             }`}
           >
-            {isPlaying ? (
-              <>
-                <Pause className="w-3.5 h-3.5" />
-                <span>PAUSE</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-3.5 h-3.5 fill-current" />
-                <span>{currentTimeMs >= totalDurationMs ? 'REPLAY' : 'PLAY'}</span>
-              </>
-            )}
+            <span
+              className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors ${
+                isPlaying
+                  ? 'bg-ledger-plate border border-ledger-border text-argent group-hover:border-rule'
+                  : 'bg-chassis text-argent'
+              }`}
+            >
+              {isPlaying ? (
+                <Pause className="w-2.5 h-2.5 fill-current" />
+              ) : (
+                <Play className="w-2.5 h-2.5 fill-current ml-0.5" />
+              )}
+            </span>
+            <span>{isPlaying ? 'PAUSE' : currentTimeMs >= totalDurationMs ? 'REPLAY' : 'PLAY'}</span>
           </button>
 
           {/* Quick Milestone Jumps */}

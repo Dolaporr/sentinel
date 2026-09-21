@@ -1,5 +1,7 @@
 import React, { useRef } from 'react';
 import { Upload, RefreshCw, FileText } from 'lucide-react';
+import { SentinelLogo } from './SentinelLogo';
+import { GithubIcon } from './GithubIcon';
 
 interface StatusHeaderProps {
   activeFeedName: string;
@@ -7,6 +9,7 @@ interface StatusHeaderProps {
   onResetDefault: () => void;
   eventCount: number;
   initialBudget: number;
+  onNavigateLanding?: () => void;
 }
 
 export const StatusHeader: React.FC<StatusHeaderProps> = ({
@@ -15,6 +18,7 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
   onResetDefault,
   eventCount,
   initialBudget,
+  onNavigateLanding,
 }) => {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -34,13 +38,25 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
   };
 
   return (
-    <header className="bg-chassis border-b border-ledger-border px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0">
+    <header className="bg-chassis border-b border-ledger-border px-4 lg:px-6 py-2.5 flex flex-wrap items-center justify-between gap-3 shrink-0 animate-fade-in-down">
       {/* Brand & Mission Specification */}
       <div className="flex items-center space-x-3 lg:space-x-4">
         <div className="flex items-center space-x-2.5">
-          <span className="font-semibold text-sm tracking-tight text-argent">
-            Sentinel Telemetry
-          </span>
+          {onNavigateLanding ? (
+            <button
+              onClick={onNavigateLanding}
+              className="flex items-center space-x-2 font-semibold text-sm tracking-tight text-argent hover:text-white transition-colors cursor-pointer text-left group"
+              title="Return to Sentinel home"
+            >
+              <SentinelLogo size={18} className="text-white group-hover:text-argent transition-colors" />
+              <span>Sentinel Telemetry</span>
+            </button>
+          ) : (
+            <div className="flex items-center space-x-2 font-semibold text-sm tracking-tight text-argent">
+              <SentinelLogo size={18} className="text-white" />
+              <span>Sentinel Telemetry</span>
+            </div>
+          )}
         </div>
 
         <div className="hidden md:block h-3.5 w-[1px] bg-ledger-border" />
@@ -90,6 +106,19 @@ export const StatusHeader: React.FC<StatusHeaderProps> = ({
             <RefreshCw className="w-3.5 h-3.5" />
           </button>
         )}
+
+        <div className="h-3.5 w-[1px] bg-ledger-border hidden sm:block" />
+
+        <a
+          href="https://github.com/Dolaporr/sentinel"
+          target="_blank"
+          rel="noreferrer"
+          className="px-2.5 py-1 rounded text-xs text-rule hover:text-argent bg-ledger border border-ledger-border hover:border-rule-dim transition flex items-center space-x-1.5 cursor-pointer"
+          title="View Sentinel repository on GitHub"
+        >
+          <GithubIcon size={13} className="text-rule hover:text-white transition-colors" />
+          <span className="hidden sm:inline">GitHub</span>
+        </a>
       </div>
     </header>
   );

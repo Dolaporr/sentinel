@@ -6,12 +6,19 @@
   color-scheme: dark;
 }
 
+html {
+  overflow-x: hidden;
+  min-height: 100%;
+}
+
 body {
   background-color: #0D0F12;
   color: #F3F4F6;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
   margin: 0;
   padding: 0;
+  overflow-x: hidden;
+  min-height: 100%;
 }
 
 /* Tabular figures for telemetry readout */
@@ -54,3 +61,115 @@ body {
 .rule-hairline-l {
   border-left: 1px solid #232832;
 }
+
+/* Atmospheric Sentinel motion & glow effects */
+@keyframes sentinelFloatKeyframes {
+  0%, 100% {
+    transform: scale(1) translate3d(0, 0, 0);
+  }
+  50% {
+    transform: scale(1.02) translate3d(-3px, -5px, 0);
+  }
+}
+
+.sentinel-float-motion {
+  animation: sentinelFloatKeyframes 12s ease-in-out infinite;
+  will-change: transform;
+}
+
+@keyframes sentinelBreatheKeyframes {
+  0%, 100% {
+    opacity: 0.72;
+  }
+  35% {
+    opacity: 0.92;
+  }
+  65% {
+    opacity: 0.78;
+  }
+  85% {
+    opacity: 0.88;
+  }
+}
+
+.sentinel-breathe-cycle {
+  animation: sentinelBreatheKeyframes 14s ease-in-out infinite;
+  will-change: opacity;
+}
+
+/* Glassmorphism primitives */
+.glass-card {
+  background: rgba(19, 22, 28, 0.45);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  box-shadow: 0 10px 30px -10px rgba(0, 0, 0, 0.5), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+}
+
+.glass-card-hover {
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.glass-card-hover:hover {
+  background: rgba(255, 255, 255, 0.05);
+  border-color: rgba(255, 255, 255, 0.22);
+  box-shadow: 0 16px 40px -10px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.18), 0 0 24px rgba(255, 255, 255, 0.04);
+}
+
+/* Page Load & Entrance Keyframes */
+@keyframes fadeInUpKeyframes {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 16px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes fadeInDownKeyframes {
+  from {
+    opacity: 0;
+    transform: translate3d(0, -10px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+@keyframes fadeInKeyframes {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUpKeyframes 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-fade-in-down {
+  animation: fadeInDownKeyframes 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.animate-fade-in {
+  animation: fadeInKeyframes 0.5s ease-out both;
+}
+
+/* Stagger Delays */
+.delay-75 { animation-delay: 75ms; }
+.delay-100 { animation-delay: 100ms; }
+.delay-150 { animation-delay: 150ms; }
+.delay-200 { animation-delay: 200ms; }
+.delay-250 { animation-delay: 250ms; }
+.delay-300 { animation-delay: 300ms; }
+.delay-350 { animation-delay: 350ms; }
+
+
+
+
+

@@ -43,7 +43,7 @@ export const BudgetHero: React.FC<BudgetHeroProps> = ({
 
   return (
     <div
-      className={`p-5 lg:p-6 bg-ledger flex flex-col justify-between select-none transition-all duration-300 ${
+      className={`p-5 lg:p-6 bg-ledger flex flex-col justify-between select-none transition-all duration-300 shrink-0 ${
         isRecessed ? 'opacity-40 hover:opacity-75' : 'opacity-100'
       }`}
     >

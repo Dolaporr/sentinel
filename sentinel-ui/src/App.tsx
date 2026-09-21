@@ -1,96 +1,52 @@
-import { useReplayEngine } from './hooks/useReplayEngine';
-import { StatusHeader } from './components/StatusHeader';
-import { PlaybackControls } from './components/PlaybackControls';
-import { SplitScreen } from './components/SplitScreen';
-import { AlertTriangle } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { LandingPage } from './components/LandingPage';
+import { ReplayViewer } from './components/ReplayViewer';
 
 export function App() {
-  const {
-    events,
-    isLoading,
-    error,
-    isPlaying,
-    currentTimeMs,
-    totalDurationMs,
-    speed,
-    initialBudget,
-    divergenceTimeMs,
-    deathTimeMs,
-    completionTimeMs,
-    nakedState,
-    governedExpensiveState,
-    sentinelState,
-    activeFeedName,
-    play,
-    pause,
-    togglePlay,
-    restart,
-    seek,
-    setSpeed,
-    loadRawFeed,
-    resetToDefaultFixture,
-  } = useReplayEngine('/sample-feed.jsonl');
+  const [route, setRoute] = useState<'landing' | 'replay'>(() => {
+    if (typeof window === 'undefined') return 'landing';
+    const path = window.location.pathname.replace(/\/+$/, '');
+    const hash = window.location.hash;
+    const search = window.location.search;
+    if (path === '/replay' || hash === '#/replay' || search.includes('view=replay')) {
+      return 'replay';
+    }
+    return 'landing';
+  });
 
-  const divergenceHappened = divergenceTimeMs !== null && currentTimeMs >= divergenceTimeMs;
+  useEffect(() => {
+    const handlePopState = () => {
+      const path = window.location.pathname.replace(/\/+$/, '');
+      const hash = window.location.hash;
+      const search = window.location.search;
+      if (path === '/replay' || hash === '#/replay' || search.includes('view=replay')) {
+        setRoute('replay');
+      } else {
+        setRoute('landing');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
-  return (
-    <div className="h-screen w-screen flex flex-col bg-chassis text-argent overflow-hidden select-none font-sans">
-      {/* Top Telemetry Header */}
-      <StatusHeader
-        activeFeedName={activeFeedName}
-        onUploadCustomFeed={loadRawFeed}
-        onResetDefault={resetToDefaultFixture}
-        eventCount={events.length}
-        initialBudget={initialBudget}
-      />
+  // index.html carries the landing page's title so scrapers, which do not run
+  // this code, see it. The replay view keeps its own once React is running.
+  useEffect(() => {
+    document.title = route === 'replay'
+      ? 'SENTINEL // Dual-Agent Telemetry Replay'
+      : 'Sentinel — a spend governor for AI agents';
+  }, [route]);
 
-      {/* Main Playback Tape Controls */}
-      <PlaybackControls
-        isPlaying={isPlaying}
-        currentTimeMs={currentTimeMs}
-        totalDurationMs={totalDurationMs}
-        speed={speed}
-        divergenceTimeMs={divergenceTimeMs}
-        deathTimeMs={deathTimeMs}
-        completionTimeMs={completionTimeMs}
-        onPlay={play}
-        onPause={pause}
-        onTogglePlay={togglePlay}
-        onRestart={restart}
-        onSeek={seek}
-        onSpeedChange={setSpeed}
-      />
+  const navigate = (to: 'landing' | 'replay') => {
+    const targetPath = to === 'replay' ? '/replay' : '/';
+    window.history.pushState({}, '', targetPath);
+    setRoute(to);
+    window.scrollTo(0, 0);
+  };
 
-      {/* Error state if feed load fails */}
-      {error && (
-        <div className="p-4 bg-crimson/20 border-b border-crimson/40 text-crimson-bright text-xs font-mono flex items-center space-x-2 shrink-0">
-          <AlertTriangle className="w-4 h-4" />
-          <span>Feed Load Error: {error}</span>
-        </div>
-      )}
+  if (route === 'replay') {
+    return <ReplayViewer onNavigateLanding={() => navigate('landing')} />;
+  }
 
-      {/* Loading state */}
-      {isLoading ? (
-        <div className="flex-1 flex items-center justify-center font-mono text-xs text-rule">
-          <div className="flex items-center space-x-2">
-            <span className="w-2 h-2 rounded-full bg-governor-bright animate-ping" />
-            <span>Parsing telemetry stream from sample-feed.jsonl...</span>
-          </div>
-        </div>
-      ) : (
-        /* The Asymmetric 2+1 Divergence Arena */
-        <SplitScreen
-          nakedState={nakedState}
-          governedExpensiveState={governedExpensiveState}
-          sentinelState={sentinelState}
-          divergenceHappened={divergenceHappened}
-          currentTimeMs={currentTimeMs}
-          totalDurationMs={totalDurationMs}
-          divergenceTimeMs={divergenceTimeMs}
-          deathTimeMs={deathTimeMs}
-          completionTimeMs={completionTimeMs}
-        />
-      )}
-    </div>
-  );
+  return <LandingPage onNavigateReplay={() => navigate('replay')} />;
 }
