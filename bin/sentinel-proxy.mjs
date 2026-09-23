@@ -82,12 +82,19 @@ async function run() {
   // Checked here rather than in the server so a missing key reads as advice
   // instead of a 503 on the first request or a throw during startup.
   if (!process.env.ORBIO_API_KEY && !process.env.OPENROUTER_API_KEY) {
+    // Most of the people who reach this via `npx github:...` are on Windows,
+    // and `export` is not a PowerShell command -- it fails with "the term
+    // 'export' is not recognized", which gets someone stuck on shell syntax
+    // instead of on Sentinel. Print the line that actually runs on their shell.
+    const shellLine = process.platform === "win32"
+      ? '  $env:ORBIO_API_KEY="sk-..."        # current PowerShell window'
+      : "  export ORBIO_API_KEY=sk-...          # current shell";
     console.error("sentinel-proxy: ORBIO_API_KEY is not set.");
     console.error("");
     console.error("The proxy holds your gateway key and spends against it, so it will not");
     console.error("start without one. Supply it in either of these ways:");
     console.error("");
-    console.error("  export ORBIO_API_KEY=sk-...          # current shell");
+    console.error(shellLine);
     console.error("  echo 'ORBIO_API_KEY=sk-...' > .env   # this directory");
     console.error("");
     console.error("Then run the command again.");

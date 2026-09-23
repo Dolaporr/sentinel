@@ -13,28 +13,37 @@ npm run proxy
 ```
 Base URL   http://127.0.0.1:8787/v1
 Route      POST /v1/chat/completions
+Models     GET  /v1/models
 Health     GET  /healthz
 ```
 
-## Client compatibility — 2026-09-21
+## Client compatibility — 2026-09-23
 
 Verified against the real gateway: a direct OpenAI-compatible `POST
 /v1/chat/completions` request, including streamed responses with a terminating
 `usage.cost` chunk. The generated record is
 [`PROXY_VERIFICATION.md`](PROXY_VERIFICATION.md).
 
-Verified locally against a stub: request fields `tools`, `tool_choice`, and
-`response_format` are forwarded unchanged; streamed `tool_calls` deltas and
-their arguments are forwarded progressively and settle exactly when the stream
-includes `usage.cost`.
+Verified locally against a stub: request fields `tools`, `tool_choice`,
+`response_format`, `seed`, `stop`, `temperature`, `top_p`,
+`parallel_tool_calls` and `user` are forwarded unchanged; streamed `tool_calls`
+deltas and their arguments are forwarded progressively and settle exactly when
+the stream includes `usage.cost`.
 
-Not verified for release: Cursor, Codex, Claude Code, the OpenAI SDK, and any
-client that requires model discovery. Do not claim them as supported yet.
+**`GET /v1/models` is implemented.** It returns a 200 with an OpenAI-compatible
+`{ object: "list", data: [...] }` body, synthesised from the price table
+already resident at startup -- no gateway round trip per client connect, and it
+lists exactly the models this proxy can actually admit, since admission checks
+the same table. `owned_by` comes from the id's `provider/` prefix; `created`
+from the entry's `verifiedAt`. This is the route most OpenAI-compatible
+clients, Cursor confirmed among them, GET before they will save a base URL, so
+its absence was a hard block on that whole class of client rather than a
+missing nicety.
 
-`GET /v1/models` is **not implemented** in this build; it returns the proxy's
-404 route response. The proxy has an already-resolved price table internally,
-but exposing it is a `src/proxy/` implementation task and is intentionally not
-papered over here.
+Not verified for release: a real Cursor, Codex CLI, Claude Code, or OpenAI SDK
+session actually completing a request through this proxy. `/v1/models`
+responding is necessary for those clients to get as far as attempting one; it
+is not proof any of them did. Do not claim a client as supported until it has.
 
 The API key the client sends is ignored, so anything non-empty works.
 

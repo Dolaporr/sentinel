@@ -31,6 +31,11 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) failures++;
 };
 
+// One flag drives both a non-streaming tool_calls reply and, when the request
+// also streams, an incrementally-chunked one (arguments split across deltas
+// with an `index` field), which is what a real gateway actually does -- a
+// single-delta reply would under-test whether the proxy buffers or reshapes
+// streamed tool-call argument fragments instead of passing them through raw.
 interface StubOptions { cut?: boolean; omitUsage?: boolean; toolCalls?: boolean }
 let lastUpstreamBody: Record<string, unknown> = {};
 
@@ -43,10 +48,14 @@ function startStub(options: StubOptions = {}): Server {
       const streaming = lastUpstreamBody.stream === true;
       // A `:free` model really does bill zero; anything else carries a cost.
       const cost = String(lastUpstreamBody.model ?? "").endsWith(":free") ? 0 : 0.000123;
+      const toolCallsReply = [{ id: "call_stub_1", type: "function", function: { name: "lookup", arguments: "{\"q\":\"stub\"}" } }];
       if (!streaming) {
+        const message = options.toolCalls
+          ? { role: "assistant", content: null, tool_calls: toolCallsReply }
+          : { role: "assistant", content: "hello from the stub" };
         const body = JSON.stringify({
           id: "stub-1", object: "chat.completion", model: CHEAP_MODEL,
-          choices: [{ index: 0, message: { role: "assistant", content: "hello from the stub" }, finish_reason: "stop" }],
+          choices: [{ index: 0, message, finish_reason: options.toolCalls ? "tool_calls" : "stop" }],
           usage: options.omitUsage ? { prompt_tokens: 12, completion_tokens: 5 } : { prompt_tokens: 12, completion_tokens: 5, cost }
         });
         res.writeHead(200, { "content-type": "application/json" });
@@ -133,19 +142,34 @@ async function run() {
   server.close(); stub.close();
 
   // --- 1b. OpenAI request fields pass through unchanged ---------------------
-  console.log("\n1b. tools, tool_choice, and response_format pass through unchanged");
+  console.log("\n1b. tools, tool_choice, response_format and the rest pass through unchanged");
   const tools = [{ type: "function", function: { name: "lookup", description: "Look up an incident.", parameters: { type: "object", properties: { query: { type: "string" } }, required: ["query"] } } }];
   const toolChoice = { type: "function", function: { name: "lookup" } };
   const responseFormat = { type: "json_schema", json_schema: { name: "incident_summary", strict: true, schema: { type: "object", properties: { summary: { type: "string" } }, required: ["summary"], additionalProperties: false } } };
+  // Fields OpenAI-compatible tool-calling clients send beyond the three above.
+  // Sentinel touches none of them, so each is checked against the client's own
+  // value rather than a hardcoded expectation -- a copy-paste match would pass
+  // even if the proxy silently dropped the field and both sides used the same
+  // literal.
+  const extraFields = { seed: 42, stop: ["\n\n"], temperature: 0.3, top_p: 0.9, parallel_tool_calls: false, user: "sentinel-fidelity-check" };
   stub = startStub();
   proxy = makeProxy(9913);
   server = proxy.listen();
   await new Promise((r) => setTimeout(r, 150));
-  res = await post(9913, { model: CHEAP_MODEL, messages, max_tokens: 64, tools, tool_choice: toolChoice, response_format: responseFormat });
+  const richRequest = { model: CHEAP_MODEL, messages, max_tokens: 64, tools, tool_choice: toolChoice, response_format: responseFormat, ...extraFields };
+  res = await post(9913, richRequest);
   await res.text();
   check("tools passed through unchanged", JSON.stringify(lastUpstreamBody.tools) === JSON.stringify(tools));
   check("tool_choice passed through unchanged", JSON.stringify(lastUpstreamBody.tool_choice) === JSON.stringify(toolChoice));
   check("response_format passed through unchanged", JSON.stringify(lastUpstreamBody.response_format) === JSON.stringify(responseFormat));
+  for (const field of Object.keys(extraFields) as Array<keyof typeof extraFields>) {
+    check(`${field} passed through unchanged`,
+      JSON.stringify(lastUpstreamBody[field]) === JSON.stringify(extraFields[field]),
+      `sent ${JSON.stringify(extraFields[field])}, upstream got ${JSON.stringify(lastUpstreamBody[field])}`);
+  }
+  check("only max_tokens and stream_options are proxy-owned mutations",
+    Object.keys(lastUpstreamBody).every((key) => key === "max_tokens" || key === "stream_options" || key in richRequest),
+    Object.keys(lastUpstreamBody).join(","));
   server.close(); stub.close();
 
   // --- 1c. Streamed tool calls are not collapsed or buffered ----------------
@@ -157,12 +181,17 @@ async function run() {
   res = await post(9914, { model: CHEAP_MODEL, messages, max_tokens: 64, stream: true, tools, tool_choice: toolChoice });
   text = await res.text();
   check("streamed request retained tools", JSON.stringify(lastUpstreamBody.tools) === JSON.stringify(tools));
+  check("stream_options.include_usage was added on top, not in place of the client's fields",
+    (lastUpstreamBody.stream_options as Record<string, unknown>)?.include_usage === true);
   check("client saw tool_calls deltas", text.includes("\"tool_calls\"") && text.includes("\"call_lookup\""));
   check("client saw streamed tool arguments", text.includes("{\\\"query\\\":\\\"") && text.includes("incident\\\"}"));
   check("client saw tool_calls finish reason", text.includes("\"finish_reason\":\"tool_calls\""));
   check("streamed tool call committed exactly", proxy.snapshot().committedExact === 0.0000456 && proxy.snapshot().committedEstimated === 0);
+  // /v1/models used to be unimplemented and this checked the 404; it is now
+  // implemented (§11 below verifies its content), so this is a sanity check
+  // that the route responds at all, not the route's contract.
   const models = await fetch("http://127.0.0.1:9914/v1/models");
-  check("GET /v1/models is explicitly unsupported until the proxy implements it", models.status === 404, `got ${models.status}`);
+  check("GET /v1/models responds now that it is implemented (see §11 for its content)", models.status === 200, `got ${models.status}`);
   server.close(); stub.close();
 
   // --- 2. Streaming passes through and reads usage from the tail ------------
@@ -415,6 +444,28 @@ async function run() {
   check("overhead grows per message, not once", perMessageGrowth > 3, String(perMessageGrowth));
   check("chatTemplateOverhead is per-message plus priming", chatTemplateOverhead(4) === 15, String(chatTemplateOverhead(4)));
   check("an empty message list still prices the reply priming", deriveInputTokens({ model: CHEAP_MODEL, messages: [] }) === 3);
+
+  // --- 11. GET /v1/models ----------------------------------------------------
+  console.log("\n11. /v1/models is served from the resident price table");
+  stub = startStub();
+  proxy = makeProxy(9922);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const modelsRes = await fetch("http://127.0.0.1:9922/v1/models");
+  const modelsBody = await modelsRes.json() as { object: string; data: Array<{ id: string; object: string; created: number; owned_by: string }> };
+  check("GET /v1/models is 200", modelsRes.status === 200, `got ${modelsRes.status}`);
+  check("shape is object: list", modelsBody.object === "list");
+  check("lists exactly the resident price table, not a subset", modelsBody.data.length === Object.keys(prices).length, String(modelsBody.data.length));
+  check("every priced model id is present", Object.keys(prices).every((id) => modelsBody.data.some((m) => m.id === id)));
+  check(`owned_by is derived from the id's provider prefix`, modelsBody.data.find((m) => m.id === CHEAP_MODEL)?.owned_by === "openai");
+  check("sorted by id", modelsBody.data.every((m, i) => i === 0 || modelsBody.data[i - 1].id <= m.id));
+
+  const otherRes = await fetch("http://127.0.0.1:9922/v1/other");
+  const otherBody = await otherRes.json() as { error: { message: string } };
+  check("an unknown route still 404s and now names both served routes", otherRes.status === 404 && otherBody.error.message.includes("/v1/models"));
+  server.close(); stub.close();
+
   // --- proxy/runner constant drift ------------------------------------------
   console.log("");
   console.log("shared constants still match src/runner/d2-mission.ts");
