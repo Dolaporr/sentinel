@@ -545,6 +545,10 @@ export class SentinelProxy {
       console.log(`  price table       ${Object.keys(this.config.prices).length} models from ${this.config.priceSource ?? "static"} (verified ${this.config.priceVerifiedAt ?? "unknown"})`);
       console.log(`  upstream key      ${this.config.apiKey ? "configured (held here, never forwarded to clients)" : "MISSING - requests will be refused with 503"}`);
       console.log(`  client auth       none - loopback trust only, any bearer the client sends is discarded`);
+      // "Any bearer is discarded" is a security fact, not an instruction: a
+      // stranger reading it still doesn't know what to type into an editor's
+      // key field. Say it directly, with the exact example QUICKSTART.md uses.
+      console.log(`  client key        put anything (e.g. sentinel-local) - it is discarded`);
       if (this.config.capExceeded) {
         console.warn("");
         console.warn(`  *** DAILY CAP REACHED: ${usd(this.dailyCommittedUsd())} of ${usd(this.config.dailyCapUsd)} committed today.`);
