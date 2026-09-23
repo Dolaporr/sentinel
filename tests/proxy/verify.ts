@@ -31,7 +31,7 @@ const check = (name: string, ok: boolean, detail = "") => {
   if (!ok) failures++;
 };
 
-interface StubOptions { cut?: boolean; omitUsage?: boolean }
+interface StubOptions { cut?: boolean; omitUsage?: boolean; toolCallReply?: boolean }
 let lastUpstreamBody: Record<string, unknown> = {};
 
 function startStub(options: StubOptions = {}): Server {
@@ -43,10 +43,14 @@ function startStub(options: StubOptions = {}): Server {
       const streaming = lastUpstreamBody.stream === true;
       // A `:free` model really does bill zero; anything else carries a cost.
       const cost = String(lastUpstreamBody.model ?? "").endsWith(":free") ? 0 : 0.000123;
+      const toolCalls = [{ id: "call_stub_1", type: "function", function: { name: "lookup", arguments: "{\"q\":\"stub\"}" } }];
       if (!streaming) {
+        const message = options.toolCallReply
+          ? { role: "assistant", content: null, tool_calls: toolCalls }
+          : { role: "assistant", content: "hello from the stub" };
         const body = JSON.stringify({
           id: "stub-1", object: "chat.completion", model: CHEAP_MODEL,
-          choices: [{ index: 0, message: { role: "assistant", content: "hello from the stub" }, finish_reason: "stop" }],
+          choices: [{ index: 0, message, finish_reason: options.toolCallReply ? "tool_calls" : "stop" }],
           usage: options.omitUsage ? { prompt_tokens: 12, completion_tokens: 5 } : { prompt_tokens: 12, completion_tokens: 5, cost }
         });
         res.writeHead(200, { "content-type": "application/json" });
@@ -55,6 +59,14 @@ function startStub(options: StubOptions = {}): Server {
       }
       res.writeHead(200, { "content-type": "text/event-stream" });
       const frame = (payload: unknown) => `data: ${JSON.stringify(payload)}\n\n`;
+      if (options.toolCallReply) {
+        res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { role: "assistant", tool_calls: toolCalls } }] }));
+        res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: {}, finish_reason: "tool_calls" }] }));
+        if (!options.omitUsage) res.write(frame({ id: "stub-1", choices: [], usage: { prompt_tokens: 12, completion_tokens: 5, cost: 0.0000456 } }));
+        res.write("data: [DONE]\n\n");
+        res.end();
+        return;
+      }
       res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { role: "assistant", content: "hello " } }] }));
       res.write(frame({ id: "stub-1", choices: [{ index: 0, delta: { content: "from the " } }] }));
       if (options.cut) { res.destroy(); return; }
@@ -375,6 +387,83 @@ async function run() {
   check("static price table matches", JSON.stringify(proxyPrices) === JSON.stringify(prices));
   const driftSample = "the quick brown fox jumps over the lazy dog, repeatedly";
   check("estimateTokens matches", proxyEstimateTokens(driftSample) === estimateTokens(driftSample));
+
+  // --- 11. Pass-through fidelity -------------------------------------------
+  console.log("\n11. the client's body and the gateway's response pass through untouched");
+
+  const richRequest = {
+    model: CHEAP_MODEL,
+    messages,
+    max_tokens: 64,
+    tools: [{ type: "function", function: { name: "lookup", description: "look something up", parameters: { type: "object", properties: { q: { type: "string" } } } } }],
+    tool_choice: "auto",
+    response_format: { type: "json_object" },
+    seed: 42,
+    stop: ["\n\n"],
+    temperature: 0.3,
+    top_p: 0.9,
+    parallel_tool_calls: false,
+    user: "sentinel-fidelity-check"
+  };
+  const CHECKED_PASSTHROUGH_FIELDS = ["tools", "tool_choice", "response_format", "seed", "stop", "temperature", "top_p", "parallel_tool_calls", "user"] as const;
+
+  stub = startStub({ toolCallReply: true });
+  proxy = makeProxy(9920);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+
+  res = await post(9920, richRequest);
+  const fidelityBody = await res.json() as { choices: Array<{ message: { tool_calls?: unknown } }> };
+
+  check("request reached the stub as POST", res.status === 200, `got ${res.status}`);
+  for (const field of CHECKED_PASSTHROUGH_FIELDS) {
+    check(`outbound ${field} is the client's value, unmodified`,
+      JSON.stringify(lastUpstreamBody[field]) === JSON.stringify((richRequest as Record<string, unknown>)[field]),
+      `sent ${JSON.stringify((richRequest as Record<string, unknown>)[field])}, upstream got ${JSON.stringify(lastUpstreamBody[field])}`);
+  }
+  check("only max_tokens and stream_options are proxy-owned mutations",
+    Object.keys(lastUpstreamBody).every((key) => key === "max_tokens" || key === "stream_options" || key in richRequest),
+    Object.keys(lastUpstreamBody).join(","));
+  check("outbound message content is exactly what was sent", JSON.stringify(lastUpstreamBody.messages) === JSON.stringify(richRequest.messages));
+  check("non-streaming response tool_calls arrive unmodified",
+    JSON.stringify(fidelityBody.choices[0].message.tool_calls) === JSON.stringify([{ id: "call_stub_1", type: "function", function: { name: "lookup", arguments: '{"q":"stub"}' } }]));
+  server.close(); stub.close();
+
+  console.log("\n11b. the same, streamed: tool_calls deltas pass through unmodified");
+  stub = startStub({ toolCallReply: true });
+  proxy = makeProxy(9921);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  res = await post(9921, { ...richRequest, stream: true });
+  const streamedToolCallText = await res.text();
+  check("request carried the client's tools through while streaming",
+    JSON.stringify(lastUpstreamBody.tools) === JSON.stringify(richRequest.tools));
+  check("stream_options.include_usage was added on top, not in place of the client's fields",
+    (lastUpstreamBody.stream_options as Record<string, unknown>)?.include_usage === true);
+  check("streamed tool_calls delta is the stub's JSON verbatim",
+    streamedToolCallText.includes('"tool_calls":[{"id":"call_stub_1","type":"function","function":{"name":"lookup","arguments":"{\\"q\\":\\"stub\\"}"}}]'));
+  server.close(); stub.close();
+
+  // --- 12. GET /v1/models ----------------------------------------------------
+  console.log("\n12. /v1/models is served from the resident price table");
+  stub = startStub();
+  proxy = makeProxy(9922);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const modelsRes = await fetch("http://127.0.0.1:9922/v1/models");
+  const modelsBody = await modelsRes.json() as { object: string; data: Array<{ id: string; object: string; created: number; owned_by: string }> };
+  check("GET /v1/models is 200", modelsRes.status === 200, `got ${modelsRes.status}`);
+  check("shape is object: list", modelsBody.object === "list");
+  check("lists exactly the resident price table, not a subset", modelsBody.data.length === Object.keys(prices).length, String(modelsBody.data.length));
+  check("every priced model id is present", Object.keys(prices).every((id) => modelsBody.data.some((m) => m.id === id)));
+  check(`owned_by is derived from the id's provider prefix`, modelsBody.data.find((m) => m.id === CHEAP_MODEL)?.owned_by === "openai");
+  check("sorted by id", modelsBody.data.every((m, i) => i === 0 || modelsBody.data[i - 1].id <= m.id));
+
+  const otherRes = await fetch("http://127.0.0.1:9922/v1/other");
+  const otherBody = await otherRes.json() as { error: { message: string } };
+  check("an unknown route still 404s and now names both served routes", otherRes.status === 404 && otherBody.error.message.includes("/v1/models"));
+  server.close(); stub.close();
 
   console.log(`\n${failures === 0 ? "ALL CHECKS PASSED" : `${failures} CHECK(S) FAILED`}`);
   process.exit(failures === 0 ? 0 : 1);

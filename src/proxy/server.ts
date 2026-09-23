@@ -10,6 +10,7 @@ import { DailySpendStore, resolveDailyBudget } from "./spend.js";
 import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
 
 const ROUTE = "/v1/chat/completions";
+const MODELS_ROUTE = "/v1/models";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const round = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
@@ -95,6 +96,32 @@ function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: numbe
     }
   };
   return { error: { ...shapes[reason], param: null } };
+}
+
+/**
+ * Synthesised from the price table already resident in memory at startup, not
+ * proxied live to the gateway. Most OpenAI-compatible clients -- Cursor is
+ * confirmed to -- GET this on connect to populate a model dropdown and confirm
+ * the endpoint is real, before the user can even attempt a completion. Serving
+ * it from the table we already loaded costs nothing per connect and lists
+ * exactly the models this proxy can actually admit; proxying it live would add
+ * a gateway round trip to every client's connection check for no more truth,
+ * since admission is checked against this same table regardless.
+ */
+function modelsBody(prices: Readonly<Record<string, PriceEntry>>): { object: "list"; data: Array<{ id: string; object: "model"; created: number; owned_by: string }> } {
+  const data = Object.entries(prices)
+    .map(([id, price]) => {
+      const created = Math.floor(Date.parse(price.verifiedAt) / 1000);
+      const slash = id.indexOf("/");
+      return {
+        id,
+        object: "model" as const,
+        created: Number.isFinite(created) ? created : 0,
+        owned_by: slash === -1 ? "orbio" : id.slice(0, slash)
+      };
+    })
+    .sort((a, b) => a.id.localeCompare(b.id));
+  return { object: "list", data };
 }
 
 function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
@@ -241,6 +268,19 @@ export class SentinelProxy {
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = (req.url ?? "").split("?")[0];
+    if (req.method === "GET" && url === MODELS_ROUTE) {
+      // Fail loud rather than hand back an empty list: an empty array renders as
+      // a dropdown with nothing in it and no explanation, which is worse than an
+      // error a client actually surfaces. resolvePriceTable's own fallback chain
+      // means this should be unreachable in practice, but the route promises it.
+      const models = Object.keys(this.config.prices).length;
+      if (models === 0) {
+        sendJson(res, 500, { error: { message: "Sentinel proxy has no usable price table; refusing to report an empty model list.", type: "api_error", code: "sentinel_no_price_table", param: null } });
+        return;
+      }
+      sendJson(res, 200, modelsBody(this.config.prices));
+      return;
+    }
     if (req.method === "GET" && url === "/healthz") {
       const state = this.governor.snapshot();
       sendJson(res, 200, {
@@ -264,7 +304,7 @@ export class SentinelProxy {
       return;
     }
     if (url !== ROUTE) {
-      sendJson(res, 404, { error: { message: `Sentinel proxy serves ${ROUTE} only.`, type: "invalid_request_error", code: "not_found", param: null } });
+      sendJson(res, 404, { error: { message: `Sentinel proxy serves ${ROUTE} and ${MODELS_ROUTE} only.`, type: "invalid_request_error", code: "not_found", param: null } });
       return;
     }
     if (req.method !== "POST") {
