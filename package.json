@@ -25,7 +25,8 @@
     "proxy": "tsx src/proxy/server.ts",
     "proxy:verify": "tsx tests/proxy/verify.ts",
     "proxy:verify:live": "tsx tests/proxy/live-verify.ts",
-    "demo:call": "tsx scripts/demo-call.ts",
+    "proxy:verify:ledger": "tsx tests/proxy/ledger-verify.ts",
+    "demo:call": "tsx scripts/demo-call.ts",
     "proxy:cli": "node bin/sentinel-proxy.mjs"
   },
   "dependencies": {

@@ -1,6 +1,7 @@
 import "dotenv/config";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { pathToFileURL } from "node:url";
+import { readFileSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
 import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governor/types.js";
@@ -8,10 +9,22 @@ import { BIND_HOST, UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.
 import { priceDrift, resolvePriceTable } from "./prices.js";
 import { DailySpendStore, resolveDailyBudget } from "./spend.js";
 import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
+import { agentLabelFromHeader } from "./agent-label.js";
+import { buildLedgerViewModel, CallLedger } from "./call-ledger.js";
 
 const ROUTE = "/v1/chat/completions";
 const MODELS_ROUTE = "/v1/models";
+const LEDGER_PAGE_ROUTE = "/";
+const LEDGER_DATA_ROUTE = "/ledger.json";
 const MAX_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Resolved against this module's own location, not process.cwd(). A user's
+ * directory when they run `npx github:Dolaporr/sentinel` is empty by design
+ * (docs/PROXY.md), so a cwd-relative path would fail exactly the way importing
+ * the mission runner's fixtures/corpus once did -- see mission-constants.ts.
+ */
+const LEDGER_PAGE_PATH = fileURLToPath(new URL("./ledger.html", import.meta.url));
 const round = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
 /**
@@ -195,6 +208,7 @@ export class StreamAccumulator {
 export class SentinelProxy {
   private readonly governor: BudgetGovernor;
   readonly ledger: ReservationLedger;
+  readonly callLedger: CallLedger;
   private sweeper: ReturnType<typeof setInterval> | undefined;
   private readonly spend: DailySpendStore;
   /** Spend committed today before this process started. */
@@ -202,9 +216,22 @@ export class SentinelProxy {
   /** Set the moment admissions halt, so the refusal can explain itself. */
   private quarantineCause: QuarantineCause | null = null;
 
+  private readonly ledgerPageHtml: string;
+
   constructor(private readonly config: ProxyConfig) {
     this.ledger = new ReservationLedger(config.ledgerPath);
+    this.callLedger = new CallLedger(config.callLedgerPath);
     this.spend = new DailySpendStore(config.spendPath);
+    // Read once at startup: the page is a static asset that ships with the
+    // package, not something that changes while this process is running.
+    // A missing file degrades GET / to a plain-text pointer rather than
+    // taking the whole proxy down over a page nobody's completions depend on.
+    try {
+      this.ledgerPageHtml = readFileSync(LEDGER_PAGE_PATH, "utf8");
+    } catch (error) {
+      console.error(`[ledger] could not read ${LEDGER_PAGE_PATH}: ${error instanceof Error ? error.message : String(error)}`);
+      this.ledgerPageHtml = `<!doctype html><meta charset="utf-8"><p>The ledger page is missing from this install. Data is still at <a href="${LEDGER_DATA_ROUTE}">${LEDGER_DATA_ROUTE}</a>.</p>`;
+    }
     this.seeded = config.seededSpendUsd ?? 0;
     this.governor = new BudgetGovernor(
       {
@@ -230,16 +257,43 @@ export class SentinelProxy {
    * Written after every commit, exact or estimated. A crash therefore loses at
    * most the call in flight, rather than the whole session's spend.
    */
-  private async commitExactAndPersist(reservation: Reservation, costUsd: number): Promise<void> {
+  private async commitExactAndPersist(reservation: Reservation, costUsd: number, agent: string, streaming: boolean): Promise<void> {
     const accepted = await this.governor.commitExact(reservation.attemptId, costUsd);
     this.noteQuarantine(reservation, accepted, costUsd);
     this.spend.record(this.dailyCommittedUsd());
+    // A rejected-as-late commit changed nothing in the governor's totals, and
+    // whatever originally resolved this reservation already wrote its own
+    // ledger row -- writing one here too would double-count that attempt.
+    if (accepted) this.recordSettled(reservation, agent, costUsd, "exact", streaming);
   }
 
-  private async commitEstimatedAndPersist(reservation: Reservation, reason: string, outputTokens?: number): Promise<void> {
+  private async commitEstimatedAndPersist(reservation: Reservation, reason: string, agent: string, streaming: boolean, outputTokens?: number): Promise<void> {
+    // commitEstimated reports only whether it was accepted, not the dollar
+    // amount it computed -- governor.ts is frozen, so the amount is recovered
+    // from the public snapshot's own before/after delta rather than
+    // re-deriving the governor's private estimation formula out here.
+    const before = this.governor.snapshot().committedEstimated;
     const accepted = await this.governor.commitEstimated(reservation.attemptId, reason, outputTokens);
+    const after = this.governor.snapshot().committedEstimated;
     this.noteQuarantine(reservation, accepted, null);
     this.spend.record(this.dailyCommittedUsd());
+    if (accepted) this.recordSettled(reservation, agent, round(after - before), "estimated", streaming);
+  }
+
+  /** The one place a settled (admitted and resolved) call becomes a ledger row. */
+  private recordSettled(reservation: Reservation, agent: string, costUsd: number, costSource: "exact" | "estimated", streaming: boolean): void {
+    this.callLedger.record({
+      attempt_id: reservation.attemptId,
+      agent,
+      model: reservation.model,
+      admitted: true,
+      cost_usd: costUsd,
+      cost_source: costSource,
+      refusal_reason: null,
+      worst_case_usd: reservation.amountUsd,
+      budget_remaining_usd: this.remainingUsd(),
+      streaming
+    });
   }
 
   /**
@@ -268,6 +322,22 @@ export class SentinelProxy {
 
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = (req.url ?? "").split("?")[0];
+    if (req.method === "GET" && url === LEDGER_PAGE_ROUTE) {
+      const payload = Buffer.from(this.ledgerPageHtml, "utf8");
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "content-length": payload.length });
+      res.end(payload);
+      return;
+    }
+    if (req.method === "GET" && url === LEDGER_DATA_ROUTE) {
+      // Reads today's entries fresh on every request rather than keeping a
+      // running in-memory aggregate: this is the read side the task asks for,
+      // entirely separate from the admission path, so simple and always
+      // correct beats fast here. A day's worth of JSONL is a few thousand
+      // lines at most for a tool built to run on one machine.
+      const entries = this.callLedger.readToday();
+      sendJson(res, 200, buildLedgerViewModel(entries, this.config.dailyCapUsd));
+      return;
+    }
     if (req.method === "GET" && url === MODELS_ROUTE) {
       // Fail loud rather than hand back an empty list: an empty array renders as
       // a dropdown with nothing in it and no explanation, which is worse than an
@@ -327,6 +397,12 @@ export class SentinelProxy {
     if (!model) { sendJson(res, 400, { error: { message: "`model` is required.", type: "invalid_request_error", code: "invalid_body", param: "model" } }); return; }
     if (!Array.isArray(body.messages)) { sendJson(res, 400, { error: { message: "`messages` must be an array.", type: "invalid_request_error", code: "invalid_body", param: "messages" } }); return; }
 
+    // The client's bearer token was already ignored for authentication; it
+    // becomes an attribution label instead. Extracted here, before any
+    // admission decision, so every refusal from this point on can be charged
+    // to whoever asked for it.
+    const agent = agentLabelFromHeader(req.headers.authorization);
+
     // Refuse before reserving when we could not dispatch anyway: a reservation we
     // cannot spend is budget held against nothing.
     if (!this.config.apiKey) {
@@ -338,6 +414,14 @@ export class SentinelProxy {
     // is only this process's slice of it and cannot speak to yesterday's spend.
     if (this.config.capExceeded) {
       const total = this.dailyCommittedUsd();
+      // Worst case is left null: the cap refuses every call once reached,
+      // regardless of what that specific call would have cost, so "what it
+      // would have cost" is not a meaningful figure for this refusal reason.
+      this.callLedger.record({
+        attempt_id: `proxy:${crypto.randomUUID()}`, agent, model, admitted: false,
+        cost_usd: null, cost_source: null, refusal_reason: "DAILY_CAP_REACHED",
+        worst_case_usd: null, budget_remaining_usd: 0, streaming: body.stream === true
+      });
       sendJson(res, 402, {
         error: {
           type: "budget_exceeded",
@@ -370,6 +454,12 @@ export class SentinelProxy {
       const remaining = this.remainingUsd();
       const worstCaseLabel = Number.isFinite(worstCase) ? usd(worstCase) : "unpriced";
       console.log(`[refused] ${admission.reason} model=${model} worst_case=${worstCaseLabel} remaining=${usd(remaining)}`);
+      this.callLedger.record({
+        attempt_id: attemptId, agent, model, admitted: false,
+        cost_usd: null, cost_source: null, refusal_reason: admission.reason,
+        worst_case_usd: Number.isFinite(worstCase) ? worstCase : null,
+        budget_remaining_usd: remaining, streaming
+      });
       sendJson(res, 402, refusalBody(admission.reason, {
         worstCase, remaining, model,
         unboundable: this.config.unboundableModels?.has(model) ?? false,
@@ -421,15 +511,15 @@ export class SentinelProxy {
         "x-sentinel-max-tokens-injected": String(maxTokensInjected)
       };
 
-      if (!upstream.ok) { await this.settleUpstreamError(upstream, res, reservation, passthrough); return; }
-      if (streaming) await this.settleStream(upstream, res, reservation, passthrough);
-      else await this.settleJson(upstream, res, reservation, passthrough);
+      if (!upstream.ok) { await this.settleUpstreamError(upstream, res, reservation, passthrough, agent, streaming); return; }
+      if (streaming) await this.settleStream(upstream, res, reservation, passthrough, agent);
+      else await this.settleJson(upstream, res, reservation, passthrough, agent);
     } catch (error) {
       const aborted = controller.signal.aborted;
       const reason = aborted ? "reservation_deadline_exceeded" : `dispatch_failed:${error instanceof Error ? error.name : "unknown"}`;
       // Nothing was streamed back, so no output was observed. Zero output tokens
       // still commits the input leg: never a silent release, never a silent zero.
-      await this.commitEstimatedAndPersist(reservation, reason, 0);
+      await this.commitEstimatedAndPersist(reservation, reason, agent, streaming, 0);
       console.error(`[${reason}] ${attemptId}: ${error instanceof Error ? error.message : String(error)}`);
       if (!res.headersSent) {
         sendJson(res, aborted ? 504 : 502, { error: { message: `Sentinel proxy could not complete the upstream call: ${reason}`, type: "api_error", code: reason, param: null } });
@@ -442,16 +532,16 @@ export class SentinelProxy {
   }
 
   /** An upstream rejection generated no output, but the request is still resolved, not released. */
-  private async settleUpstreamError(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>): Promise<void> {
+  private async settleUpstreamError(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string, streaming: boolean): Promise<void> {
     const text = await upstream.text();
-    await this.commitEstimatedAndPersist(reservation, `upstream_status:${upstream.status}`, 0);
+    await this.commitEstimatedAndPersist(reservation, `upstream_status:${upstream.status}`, agent, streaming, 0);
     console.error(`[upstream ${upstream.status}] ${reservation.attemptId}: ${redact(text.slice(0, 200), this.config.apiKey)}`);
     res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
     res.end(text);
   }
 
   /** §2 step 6: commit the exact usage.cost, pass the body through untouched. */
-  private async settleJson(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>): Promise<void> {
+  private async settleJson(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string): Promise<void> {
     const text = await upstream.text();
     let cost: number | null = null;
     let outputTokens: number | undefined;
@@ -464,12 +554,12 @@ export class SentinelProxy {
     } catch { /* fall through to the estimated path */ }
 
     if (cost !== null) {
-      await this.commitExactAndPersist(reservation, cost);
+      await this.commitExactAndPersist(reservation, cost, agent, false);
       headers["x-sentinel-cost-source"] = "exact";
       headers["x-sentinel-cost-usd"] = String(cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)}`);
     } else {
-      await this.commitEstimatedAndPersist(reservation, "missing_usage_cost", outputTokens);
+      await this.commitEstimatedAndPersist(reservation, "missing_usage_cost", agent, false, outputTokens);
       headers["x-sentinel-cost-source"] = "estimated";
       console.log(`[committed estimated] ${reservation.attemptId} reason=missing_usage_cost output_tokens=${outputTokens ?? "unknown"}`);
     }
@@ -478,7 +568,7 @@ export class SentinelProxy {
   }
 
   /** §3: pass chunks through as they arrive, accumulate to read usage from the tail. */
-  private async settleStream(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>): Promise<void> {
+  private async settleStream(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string): Promise<void> {
     res.writeHead(upstream.status, {
       "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
       "cache-control": "no-cache",
@@ -492,7 +582,7 @@ export class SentinelProxy {
     let cut: Error | null = null;
 
     if (!reader) {
-      await this.commitEstimatedAndPersist(reservation, "stream_without_body", 0);
+      await this.commitEstimatedAndPersist(reservation, "stream_without_body", agent, true, 0);
       res.end();
       return;
     }
@@ -511,13 +601,13 @@ export class SentinelProxy {
 
     const cost = accumulator.cost();
     if (cut === null && cost !== null) {
-      await this.commitExactAndPersist(reservation, cost);
+      await this.commitExactAndPersist(reservation, cost, agent, true);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)} (stream)`);
     } else {
       // A cut stream still burned tokens, and a clean stream with no usage still
       // cost money. Estimate from what we actually saw; never a silent zero.
       const reason = cut ? "stream_cut" : accumulator.sawDone ? "stream_without_usage" : "stream_ended_without_done";
-      await this.commitEstimatedAndPersist(reservation, reason, accumulator.outputTokens());
+      await this.commitEstimatedAndPersist(reservation, reason, agent, true, accumulator.outputTokens());
       console.log(`[committed estimated] ${reservation.attemptId} reason=${reason} output_tokens=${accumulator.outputTokens()}`);
     }
     res.end();
@@ -549,6 +639,12 @@ export class SentinelProxy {
       // stranger reading it still doesn't know what to type into an editor's
       // key field. Say it directly, with the exact example QUICKSTART.md uses.
       console.log(`  client key        put anything (e.g. sentinel-local) - it is discarded`);
+      console.log(`  ledger            http://${BIND_HOST}:${this.config.port}${LEDGER_PAGE_ROUTE} - what it cost, who for, what was refused`);
+      // One of the three places this sentence has to appear, per docs/PROXY.md's
+      // "What this ledger stores": here, at the top of the ledger page itself,
+      // and in the README. Said plainly, at boot, before anyone points a tool
+      // at this proxy.
+      console.log(`  ledger stores metadata only - never prompt or completion content`);
       if (this.config.capExceeded) {
         console.warn("");
         console.warn(`  *** DAILY CAP REACHED: ${usd(this.dailyCommittedUsd())} of ${usd(this.config.dailyCapUsd)} committed today.`);

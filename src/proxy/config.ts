@@ -42,6 +42,14 @@ export interface ProxyConfig {
   defaultMaxTokens: number;
   apiKey: string | undefined;
   ledgerPath: string | undefined;
+  /**
+   * Per-call, agent-attributed record the ledger view reads. On by default,
+   * unlike ledgerPath above: a page whose entire point is showing what
+   * happened needs something to read out of the box, not an env var nobody
+   * sets. See src/proxy/call-ledger.ts for why this is a separate file from
+   * the frozen governor ledger rather than a reader built on top of it.
+   */
+  callLedgerPath: string;
   /** Where the live price table is fetched from at startup. */
   modelsUrl: string;
   /** Last known good price table, used when the gateway fetch fails. */
@@ -86,6 +94,7 @@ export function loadConfig(): ProxyConfig {
     defaultMaxTokens: int("SENTINEL_PROXY_DEFAULT_MAX_TOKENS", 1_024),
     apiKey: process.env.ORBIO_API_KEY ?? process.env.OPENROUTER_API_KEY,
     ledgerPath: process.env.SENTINEL_PROXY_LEDGER,
+    callLedgerPath: process.env.SENTINEL_PROXY_CALL_LEDGER ?? ".cache/calls.jsonl",
     modelsUrl: MODELS_URL,
     priceCachePath: process.env.SENTINEL_PROXY_PRICE_CACHE ?? ".cache/price-table.json"
   };

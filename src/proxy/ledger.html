@@ -1,0 +1,504 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — ledger</title>
+<style>
+  :root {
+    --chassis: #0B0D10;
+    --ledger: #13161C;
+    --ledger-plate: #171B22;
+    --ledger-border: #212630;
+    --ledger-subtle: #2B323F;
+    --rule: #6F7B8C;
+    --rule-dim: #47505E;
+    --rule-bright: #98A5B6;
+    --argent: #F1F3F5;
+    --argent-muted: #C5CBD3;
+    --decision: #2563EB;
+    --decision-bright: #3B82F6;
+    --decision-border: #60A5FA;
+    --decision-subtle: rgba(37, 99, 235, 0.12);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--chassis);
+    color: var(--argent);
+    font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  .tabular { font-variant-numeric: tabular-nums; }
+  main {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 20px 16px 48px;
+  }
+  header { margin-bottom: 4px; }
+  header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--argent);
+    margin: 0 0 2px;
+  }
+  header .date {
+    font-size: 12px;
+    color: var(--rule);
+  }
+  .privacy-note {
+    margin: 12px 0 20px;
+    padding: 8px 10px;
+    border: 1px solid var(--ledger-border);
+    border-radius: 6px;
+    background: var(--ledger-plate);
+    color: var(--rule-bright);
+    font-size: 11.5px;
+    line-height: 1.5;
+  }
+  section {
+    margin-top: 22px;
+  }
+  section h2 {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--rule);
+    margin: 0 0 8px;
+  }
+  .panel {
+    background: var(--ledger);
+    border: 1px solid var(--ledger-border);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .today-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--ledger-border);
+  }
+  @media (min-width: 480px) {
+    .today-grid { grid-template-columns: repeat(4, 1fr); }
+  }
+  .stat {
+    background: var(--ledger);
+    padding: 12px 14px;
+  }
+  .stat .label {
+    font-size: 10.5px;
+    color: var(--rule);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 4px;
+  }
+  .stat .value {
+    font-size: 17px;
+    font-weight: 600;
+    color: var(--argent);
+  }
+  .stat .sub {
+    font-size: 11px;
+    color: var(--rule-dim);
+    margin-top: 2px;
+  }
+  #sparkline-wrap { padding: 10px 14px 12px; border-top: 1px solid var(--ledger-border); }
+  #sparkline { width: 100%; height: 36px; display: block; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  thead th {
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--rule-dim);
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ledger-border);
+    white-space: nowrap;
+  }
+  thead th.num, td.num { text-align: right; }
+  tbody td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--ledger-border);
+    color: var(--argent-muted);
+    vertical-align: top;
+  }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody td.agent, tbody td.model { color: var(--argent); font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 12px; overflow-wrap: break-word; }
+  tbody td.spend { color: var(--argent); font-weight: 500; }
+  .refusal-row td { background: var(--decision-subtle); }
+  .refusal-row td.model, .refusal-row td.agent { color: var(--decision-bright); }
+  .refusal-badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: rgba(37, 99, 235, 0.15);
+    color: var(--decision-bright);
+    border: 1px solid rgba(96, 165, 250, 0.4);
+    font-size: 9.5px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--rule-dim);
+    border: 1px dashed var(--ledger-border);
+    border-radius: 8px;
+    font-size: 12.5px;
+    line-height: 1.6;
+  }
+  .empty strong { color: var(--rule-bright); font-weight: 500; }
+  .most-expensive {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 14px 16px;
+    flex-wrap: wrap;
+  }
+  .most-expensive .desc { color: var(--argent-muted); font-size: 13px; }
+  .most-expensive .desc .mono { color: var(--argent); }
+  .most-expensive .amount { font-size: 20px; font-weight: 600; color: var(--argent); }
+  .table-scroll { overflow-x: auto; }
+
+  /* Below this width a rigid table forces either mid-word wrapping or
+     horizontal scroll on the two columns that matter most (agent, model).
+     Both read badly on a phone, so the row becomes a small card instead:
+     the name on its own full-width line, everything else as label:value
+     pairs beneath it. No JS branch for this -- the same markup just lays
+     out differently. */
+  @media (max-width: 560px) {
+    #by-agent-table thead, #by-model-table thead, #refusals-table thead { display: none; }
+    #by-agent-table tbody tr, #by-model-table tbody tr, #refusals-table tbody tr {
+      display: block;
+      padding: 10px 10px 8px;
+      border-bottom: 1px solid var(--ledger-border);
+    }
+    #by-agent-table tbody tr:last-child, #by-model-table tbody tr:last-child, #refusals-table tbody tr:last-child {
+      border-bottom: none;
+    }
+    #by-agent-table td, #by-model-table td, #refusals-table td {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      padding: 2px 0;
+      border-bottom: none;
+    }
+    #by-agent-table td.agent, #by-model-table td.model, #refusals-table td.agent, #refusals-table td.model {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 5px;
+      padding: 0;
+    }
+    td[data-label]::before {
+      content: attr(data-label);
+      color: var(--rule-dim);
+      font-size: 10.5px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    }
+  }
+  footer {
+    margin-top: 32px;
+    font-size: 10.5px;
+    color: var(--rule-dim);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Sentinel — ledger</h1>
+    <div class="date mono" id="date-label">loading…</div>
+  </header>
+
+  <div class="privacy-note">
+    Sentinel never stores prompt or completion content here. Every row below is
+    metadata only — model, cost, timing and this label — never what was asked
+    or answered.
+  </div>
+
+  <section id="today-section">
+    <h2>Today</h2>
+    <div class="panel">
+      <div class="today-grid" id="today-grid"></div>
+      <div id="sparkline-wrap" style="display:none">
+        <svg id="sparkline" viewBox="0 0 300 36" preserveAspectRatio="none"></svg>
+      </div>
+    </div>
+  </section>
+
+  <section id="by-agent-section">
+    <h2>By agent</h2>
+    <div class="panel table-scroll">
+      <table id="by-agent-table">
+        <thead><tr><th>Agent</th><th class="num">Calls</th><th class="num">Spend</th><th class="num">Avg / call</th><th class="num">Share</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="by-model-section">
+    <h2>By model</h2>
+    <div class="panel table-scroll">
+      <table id="by-model-table">
+        <thead><tr><th>Model</th><th class="num">Calls</th><th class="num">Spend</th><th class="num">Avg / call</th><th class="num">Share</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="refusals-section">
+    <h2>Refusals — money not spent</h2>
+    <div class="panel table-scroll">
+      <table id="refusals-table">
+        <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Reason</th><th class="num">Would've cost</th><th class="num">Left</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="most-expensive-section">
+    <h2>Most expensive call today</h2>
+    <div class="panel" id="most-expensive-panel"></div>
+  </section>
+
+  <footer id="generated-at"></footer>
+</main>
+
+<script>
+(function () {
+  "use strict";
+
+  var REFRESH_MS = 6000;
+
+  function usd(value) {
+    if (value === null || value === undefined) return "—";
+    var abs = Math.abs(value);
+    if (abs > 0 && abs < 0.01) return "$" + value.toFixed(6);
+    return "$" + value.toFixed(4);
+  }
+
+  function pct(value) {
+    if (value === null || value === undefined) return "—";
+    return (value * 100).toFixed(1) + "%";
+  }
+
+  function timeLabel(iso) {
+    try { return new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+    catch (e) { return iso; }
+  }
+
+  /** Every dynamic value reaches the DOM through textContent, never innerHTML
+   *  or a template string, however clean it already looks: agent labels are
+   *  attacker-controlled text choosing their own value, and model ids come
+   *  from a gateway this proxy does not control. This is what makes "never
+   *  interpolate unescaped" true by construction rather than by an escaper
+   *  someone could forget to call. */
+  function cell(text, opts) {
+    opts = opts || {};
+    var td = document.createElement("td");
+    td.textContent = text;
+    if (opts.cls) td.className = opts.cls;
+    // Read by the mobile card layout's td::before rule; the primary name
+    // cell (agent/model) carries no label, since it is the card's own title.
+    if (opts.label) td.setAttribute("data-label", opts.label);
+    return td;
+  }
+
+  function row(cells) {
+    var tr = document.createElement("tr");
+    cells.forEach(function (c) { tr.appendChild(c); });
+    return tr;
+  }
+
+  function renderToday(today) {
+    var grid = document.getElementById("today-grid");
+    grid.innerHTML = "";
+    var stats = [
+      { label: "Spent today", value: usd(today.spentUsd), sub: "of " + usd(today.budgetUsd) + " budget" },
+      { label: "Exact / estimated", value: usd(today.exactUsd), sub: today.estimatedUsd > 0 ? usd(today.estimatedUsd) + " estimated" : "nothing estimated" },
+      { label: "Calls made", value: String(today.callsMade), sub: "admitted and settled" },
+      { label: "Calls refused", value: String(today.callsRefused), sub: "money not spent" }
+    ];
+    stats.forEach(function (s) {
+      var div = document.createElement("div");
+      div.className = "stat";
+      var label = document.createElement("div"); label.className = "label"; label.textContent = s.label;
+      var value = document.createElement("div"); value.className = "value mono tabular"; value.textContent = s.value;
+      var sub = document.createElement("div"); sub.className = "sub"; sub.textContent = s.sub;
+      div.appendChild(label); div.appendChild(value); div.appendChild(sub);
+      grid.appendChild(div);
+    });
+  }
+
+  function renderSparkline(points) {
+    var wrap = document.getElementById("sparkline-wrap");
+    var svg = document.getElementById("sparkline");
+    if (!points || points.length < 2) { wrap.style.display = "none"; return; }
+    wrap.style.display = "block";
+    var max = points[points.length - 1].cumulativeUsd || 1;
+    var w = 300, h = 36;
+    var coords = points.map(function (p, i) {
+      var x = (i / (points.length - 1)) * w;
+      var y = h - (p.cumulativeUsd / max) * (h - 2) - 1;
+      return x.toFixed(1) + "," + y.toFixed(1);
+    });
+    while (svg.firstChild) svg.removeChild(svg.firstChild);
+    var poly = document.createElementNS("http://www.w3.org/2000/svg", "polyline");
+    poly.setAttribute("points", coords.join(" "));
+    poly.setAttribute("fill", "none");
+    poly.setAttribute("stroke", "#98A5B6");
+    poly.setAttribute("stroke-width", "1.5");
+    poly.setAttribute("vector-effect", "non-scaling-stroke");
+    svg.appendChild(poly);
+  }
+
+  function renderBreakdown(tableId, rows, keyLabel) {
+    var tbody = document.querySelector("#" + tableId + " tbody");
+    tbody.innerHTML = "";
+    if (!rows || rows.length === 0) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = 5;
+      td.style.color = "var(--rule-dim)";
+      td.style.textAlign = "center";
+      td.style.padding = "16px";
+      td.textContent = "No settled calls yet today.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    rows.forEach(function (r) {
+      tbody.appendChild(row([
+        cell(r.key, { cls: keyLabel }),
+        cell(String(r.calls), { cls: "num tabular", label: "Calls" }),
+        cell(usd(r.spendUsd), { cls: "num spend mono tabular", label: "Spend" }),
+        cell(usd(r.avgUsd), { cls: "num mono tabular", label: "Avg / call" }),
+        cell(pct(r.shareOfToday), { cls: "num mono tabular", label: "Share" })
+      ]));
+    });
+  }
+
+  function renderRefusals(refusals) {
+    var tbody = document.querySelector("#refusals-table tbody");
+    tbody.innerHTML = "";
+    if (!refusals || refusals.length === 0) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = 6;
+      td.style.color = "var(--rule-dim)";
+      td.style.textAlign = "center";
+      td.style.padding = "16px";
+      td.textContent = "Nothing refused today.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    refusals.forEach(function (r) {
+      var tr = row([
+        cell(timeLabel(r.ts), { cls: "mono tabular", label: "Time" }),
+        cell(r.agent, { cls: "agent" }),
+        cell(r.model, { cls: "model" }),
+        cell(r.reason.replace(/_/g, " ").toLowerCase(), { label: "Reason" }),
+        cell(usd(r.worstCaseUsd), { cls: "num mono tabular", label: "Would've cost" }),
+        cell(usd(r.remainingUsd), { cls: "num mono tabular", label: "Left" })
+      ]);
+      tr.className = "refusal-row";
+      tbody.appendChild(tr);
+    });
+  }
+
+  function renderMostExpensive(call) {
+    var panel = document.getElementById("most-expensive-panel");
+    panel.innerHTML = "";
+    var wrap = document.createElement("div");
+    wrap.className = "most-expensive";
+    if (!call) {
+      var empty = document.createElement("div");
+      empty.className = "desc";
+      empty.style.color = "var(--rule-dim)";
+      empty.textContent = "Nothing settled yet today.";
+      wrap.appendChild(empty);
+      panel.appendChild(wrap);
+      return;
+    }
+    var desc = document.createElement("div");
+    desc.className = "desc";
+    var modelSpan = document.createElement("span"); modelSpan.className = "mono"; modelSpan.textContent = call.model;
+    var agentSpan = document.createElement("span"); agentSpan.className = "mono"; agentSpan.textContent = call.agent;
+    desc.appendChild(modelSpan);
+    desc.appendChild(document.createTextNode(" for "));
+    desc.appendChild(agentSpan);
+    desc.appendChild(document.createTextNode(" at " + timeLabel(call.ts)));
+    var amount = document.createElement("div");
+    amount.className = "amount mono tabular";
+    amount.textContent = usd(call.costUsd);
+    wrap.appendChild(desc);
+    wrap.appendChild(amount);
+    panel.appendChild(wrap);
+  }
+
+  function setEmptyState(isEmpty) {
+    ["by-agent-section", "by-model-section", "refusals-section", "most-expensive-section"].forEach(function (id) {
+      var el = document.getElementById(id);
+      if (el) el.style.display = isEmpty ? "none" : "";
+    });
+    var existing = document.getElementById("empty-panel");
+    if (isEmpty && !existing) {
+      var panel = document.createElement("div");
+      panel.className = "empty";
+      panel.id = "empty-panel";
+      var strong = document.createElement("strong");
+      strong.textContent = "Nothing has come through the proxy yet today.";
+      panel.appendChild(strong);
+      panel.appendChild(document.createElement("br"));
+      panel.appendChild(document.createTextNode(
+        "Point a tool at this proxy's base URL and this page will fill in: what it cost, which agent it was for, and what got refused. Name your agent in the client's API key field — anything works, and it becomes the label above."
+      ));
+      document.getElementById("today-section").insertAdjacentElement("afterend", panel);
+    } else if (!isEmpty && existing) {
+      existing.remove();
+    }
+  }
+
+  function render(data) {
+    document.getElementById("date-label").textContent = data.date;
+    renderToday(data.today);
+    renderSparkline(data.sparkline);
+    setEmptyState(!data.hasAnyTraffic);
+    if (data.hasAnyTraffic) {
+      renderBreakdown("by-agent-table", data.byAgent, "agent");
+      renderBreakdown("by-model-table", data.byModel, "model");
+      renderRefusals(data.refusals);
+      renderMostExpensive(data.mostExpensiveCall);
+    }
+    document.getElementById("generated-at").textContent = "updated " + timeLabel(data.generatedAt);
+  }
+
+  function load() {
+    fetch("/ledger.json", { cache: "no-store" })
+      .then(function (res) { return res.json(); })
+      .then(render)
+      .catch(function () { /* a transient fetch failure just waits for the next poll */ });
+  }
+
+  load();
+  setInterval(load, REFRESH_MS);
+})();
+</script>
+</body>
+</html>

@@ -15,6 +15,8 @@ Base URL   http://127.0.0.1:8787/v1
 Route      POST /v1/chat/completions
 Models     GET  /v1/models
 Health     GET  /healthz
+Ledger     GET  /            (page)
+           GET  /ledger.json (data)
 ```
 
 ## Client compatibility — 2026-09-23
@@ -185,6 +187,82 @@ machine, in one `.env`.
 
 ---
 
+## The ledger
+
+**Sentinel never stores prompt or completion content in the ledger. Metadata
+only** — model, token counts, cost, timing, the agent label below, and the
+refusal reason when one applies. Nothing else. That sentence is repeated at
+startup, at the top of `GET /`, and in the README, because it is what makes it
+safe to point another agent's traffic at this proxy at all.
+
+`GET /` serves a single self-contained HTML page — no build step, no CDN,
+matching the artifacts — that fetches `GET /ledger.json` and answers, in
+order: what was spent today against budget, exact versus estimated; spend by
+agent; spend by model; every refusal today, with what it would have cost and
+what was left; and the single most expensive call. At most one sparkline of
+cumulative spend across the day. Both routes read from a durable store on
+disk; neither sits on the admission path, so a slow read here never delays a
+completion.
+
+### Attribution — the client's bearer token becomes a label
+
+The proxy already ignored the client's `Authorization` bearer token for
+authentication (see above): every OpenAI-compatible client is forced to put
+*something* in that field regardless, so it is reused as a name instead of
+being pure junk.
+
+```
+Authorization: Bearer roberto-ranker   -> agent "roberto-ranker"
+Authorization: Bearer sentinel-local   -> agent "unnamed"
+(missing or empty)                     -> agent "unnamed"
+```
+
+`sentinel-local` is the literal example this README and the startup banner
+tell every unconfigured client to type, so it is treated as a placeholder, not
+a name — otherwise every default install would report a distinct-looking
+`sentinel-local` agent that is really just everyone who copy-pasted the
+example.
+
+**It is a label, not authentication.** Anyone on the loopback can claim any
+name, exactly as anyone on the loopback can already spend the budget — see
+"Client auth is loopback trust, not authentication" above. Two agents that
+both send `Authorization: Bearer roberto-ranker` are indistinguishable in the
+ledger. This is the same trust boundary the proxy already has, written down a
+second time because attribution is the part someone could mistake for identity.
+
+The label is hostile input the moment it leaves the client: it is lower-cased,
+restricted to `[a-z0-9_-]`, and capped at 40 characters before it reaches the
+ledger file or the page, falling back to `unnamed` only when nothing usable
+survives — a pasted `"Roberto Ranker!!"` becomes `roberto-ranker`'s plainer
+cousin `robertoranker` rather than being thrown away outright. The page never
+interpolates the result into markup either way: every dynamic value, agent and
+model names included, reaches the DOM through `textContent`, never `innerHTML`
+or a template string, so there is no interpolation point for an escaper to be
+missing from.
+
+### Why a second ledger file
+
+`SENTINEL_PROXY_LEDGER` below (unset by default) is the frozen governor's own
+event journal — `src/governor/`'s shape, untouched. It has no field for an
+agent label, and cost commits don't even carry the model id, so building "by
+agent" or "by model" from it would mean joining several inconsistent event
+shapes by `attempt_id` on every page load. `SENTINEL_PROXY_CALL_LEDGER` is a
+separate, proxy-owned file (`src/proxy/call-ledger.ts`) written alongside the
+governor's own bookkeeping, one row per resolved request, in exactly the shape
+the ledger page needs. It does not replace the governor's ledger and does not
+touch `src/governor/`; it is on by default because a page whose entire point
+is "here is what happened" needs something to read without an env var nobody
+sets.
+
+**Found while building this:** `SENTINEL_PROXY_LEDGER` has no default and is
+unset out of the box, so the governor's own frozen event journal is not
+currently durable across a restart unless someone sets that variable
+themselves — a pre-existing gap, not something this feature introduced or
+fixed. Left as-is here rather than silently changed, since it is a decision
+about an already-shipped default, not about attribution or the view.
+
+---
+
 ## Configuration
 
 | variable | default | meaning |
@@ -197,7 +275,8 @@ machine, in one `.env`.
 | `SENTINEL_PROXY_RESERVATION_TTL_MS` | `120000` | a dispatch is aborted at its reservation deadline |
 | `SENTINEL_PROXY_SPEND` | `.cache/spend.json` | the durable daily total |
 | `SENTINEL_PROXY_PRICE_CACHE` | `.cache/price-table.json` | last known good price table |
-| `SENTINEL_PROXY_LEDGER` | unset | append governor events to this JSONL path |
+| `SENTINEL_PROXY_LEDGER` | unset | append the frozen governor's own events to this JSONL path |
+| `SENTINEL_PROXY_CALL_LEDGER` | `.cache/calls.jsonl` | per-call, agent-attributed rows the ledger page reads — see "Why a second ledger file" above |
 
 `npm run proxy:verify` exercises the route, streaming, cut streams, the price
 table's fallback chain and the daily cap against a local stub gateway. No key,
@@ -217,6 +296,13 @@ A run against the live gateway is recorded in
 and prints three lines — model, cost, remaining budget — or the refusal message
 if the governor says no. Use `--silent` so npm's own header lines stay out of
 the output.
+
+`npm run proxy:verify:ledger` covers attribution (bearer-token extraction and
+normalisation, including the `sentinel-local` placeholder and hostile input),
+the call ledger's storage and aggregates, both routes, and — the check that
+matters most — a real request carrying a distinctive prompt string, read back
+from the actual ledger file and the actual `/ledger.json` response, asserting
+that string appears nowhere in either.
 
 ---
 
@@ -268,3 +354,14 @@ the output.
   gateway does honour `stream_options: {include_usage: true}`, so streamed calls
   currently commit as exact — this is a reporting gap, not an accounting one,
   until a stream is cut.
+- **Attribution is a label, not identity.** Anyone on the loopback can claim any
+  agent name; two agents both sending the same bearer token are indistinguishable
+  in the ledger. Per-agent budgets are out of scope — see "The ledger" above.
+- **`SENTINEL_PROXY_LEDGER` (the frozen governor's own event journal, distinct
+  from the ledger page's `SENTINEL_PROXY_CALL_LEDGER`) has no default and is
+  unset out of the box**, so it is not durable across a restart unless set
+  explicitly. Pre-existing, found while building the ledger page, left
+  unchanged — see "Why a second ledger file" above.
+- **The ledger page has no historical retention beyond what
+  `SENTINEL_PROXY_CALL_LEDGER` already keeps**, no export, and no authentication
+  of its own beyond the loopback trust the whole proxy already runs on.

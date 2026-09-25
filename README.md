@@ -83,6 +83,15 @@ The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
 not claimed until each has completed a real request through it.
 
+It also serves a **ledger page** at `GET /` — spend today against budget,
+broken down by agent and by model, every refusal with what it would have cost,
+the single most expensive call. Agent attribution reuses the client's bearer
+token, which the proxy already ignored for authentication: point five agents
+at the proxy under five different names in the field they already have to
+fill in, and the split shows up without any new configuration. **The ledger
+stores metadata only — model, cost, timing, the agent label — never prompt or
+completion content.** Detail in [`docs/PROXY.md`](docs/PROXY.md#the-ledger).
+
 ---
 
 ## Running it

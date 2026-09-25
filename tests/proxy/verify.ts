@@ -111,6 +111,7 @@ function makeProxy(port: number, budgetUsd = 0.25, extra: Record<string, unknown
     priceVerifiedAt: "test",
     dailyCapUsd: 3,
     spendPath: `/tmp/sentinel-verify-spend-${port}.json`,
+    callLedgerPath: `/tmp/sentinel-verify-calls-${port}.jsonl`,
     ...extra
   });
 }
