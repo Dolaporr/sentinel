@@ -113,6 +113,7 @@ function makeProxy(port: number, budgetUsd = 0.25, extra: Record<string, unknown
     dailyCapUsd: 3,
     spendPath: `/tmp/sentinel-verify-spend-${port}.json`,
     provider: orbioProvider,
+    callLedgerPath: `/tmp/sentinel-verify-calls-${port}.jsonl`,
     ...extra
   });
 }
