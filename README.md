@@ -1,6 +1,14 @@
 # Sentinel
 
-**A spend governor for autonomous agents running on Orbio credits.**
+**A spend governor for autonomous agents calling LLM gateways.**
+
+A gateway key draws straight from an account balance with no credit limit of
+its own — that's true of Orbio and of OpenRouter alike. Sentinel puts an
+admission check in front of every call so an agent is stopped by its budget,
+not by an account going to zero. One provider runs per instance; Orbio and
+OpenRouter are both wired in today, both governed by the same code path.
+
+**[→ Quickstart](QUICKSTART.md)** — run the local proxy in one command.
 
 Two agents. Same model, same mission, same $0.25 budget. One has an admission check in front of every call, the other doesn't.
 
@@ -10,7 +18,7 @@ Two agents. Same model, same mission, same $0.25 budget. One has an admission ch
 | Governed | `openai/gpt-4.1` | 19 (1 refused) | $0.232418 (93.0%) | **$0.017582** | refused before dispatch, quarantined solvent |
 | Cheap-routed | `openai/gpt-4.1-mini` | 4 | $0.011044 (4.4%) | **$0.238956** | mission complete |
 
-Recorded live against the Orbio gateway on 2026-09-17. 45 paid calls, $0.497142 of real spend, **100% exact costs, zero estimated**. Full event ledger: [`fixtures/sample-feed.jsonl`](fixtures/sample-feed.jsonl).
+Recorded live against the Orbio gateway on 2026-09-17. 45 paid calls, $0.497142 of real spend, **100% exact costs, zero estimated**. Full event ledger: [`fixtures/sample-feed.jsonl`](fixtures/sample-feed.jsonl). That's one experiment; total live spend across this project's whole week of testing — every script and every provider that ever touched a real key — comes to **~$0.78**. The whole experiment cost less than a dollar.
 
 The first two rows are the experiment. Identical model, identical mission, identical budget — the only independent variable is admission control. Without it an agent does not stop at its limit; it goes past it.
 
@@ -32,6 +40,8 @@ So an application-level admission check is the only cap that exists.
 A reproduction in [`tests/adversarial/repro/`](tests/adversarial/repro/) drains a $100 balance in **313ms using 20 concurrent calls** — faster than a one-second polling watchdog gets its first reading. Four full-context requests to a single listed model exceed the balance in one wave.
 
 Any breaker that reacts to spend learns about the spend from the same requests that are draining the account. It cannot win that race at any polling interval, including zero.
+
+This isn't an Orbio quirk. Querying OpenRouter's own account usage right after a call showed the rollup hadn't yet caught up with the per-call cost that same response had already reported in `usage.cost`. The same lag, on a second, independent gateway. "You can't govern by watching the balance" isn't a property of one vendor's dashboard — it's what happens whenever the authoritative number is per-call and the balance is a downstream aggregate.
 
 So Sentinel's governor is a **synchronous, in-process admission check that runs before dispatch and makes no network call**. No LLM call and no HTTP round-trip in the hot path. That is the whole design constraint, and it was measured rather than assumed.
 
@@ -77,18 +87,20 @@ These are stated because the project's whole argument is about not overclaiming.
 Sentinel now ships a **local OpenAI-compatible proxy** that holds the key and
 puts the governor in front of every chat-completions request. It is a single
 custodian process rather than a library convention; the tool receives only a
-throwaway local token while the real Orbio key remains in the proxy.
+throwaway local token while the real gateway key remains in the proxy.
 
-The proxy runs one gateway per instance, chosen with `SENTINEL_PROVIDER`.
-**Orbio and OpenRouter report real cost** — both return `usage.cost` on the
-response, so Sentinel commits exactly what the gateway billed
-(`cost_source: "exact"`). A provider that reports no such figure would have
-its cost **computed by Sentinel's own arithmetic from a static price table**
-and labelled `cost_source: "estimated"` — that label means Sentinel's own
-math, not the provider's invoice, and it cannot see cached-token discounts,
-volume tiers, or a price change the provider made without updating its table.
-No provider in this state is wired in today. The banner and `/healthz`
-(`cost_reporting`) always say, per provider, which one you're looking at.
+The proxy runs one gateway per instance, chosen with `SENTINEL_PROVIDER`:
+
+| Provider | `cost_source` | How |
+|---|---|---|
+| `orbio` | **exact** | `usage.cost` on every response — the gateway's own billed figure, committed as-is |
+| `openrouter` | **exact** | same — `usage.cost` on every response |
+| *(a future provider with no cost field)* | **estimated** | computed by Sentinel's own arithmetic from a static price table, not the gateway's invoice — blind to cached-token discounts, volume tiers, and any price change the provider hasn't republished |
+
+**`exact` is never returned for a number Sentinel calculated itself.** No
+provider is in the `estimated` state today — both wired-in providers report
+their own real cost. The banner and `/healthz` (`cost_reporting`) always say,
+per provider, which one you're looking at.
 
 The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
