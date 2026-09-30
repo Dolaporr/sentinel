@@ -108,7 +108,7 @@ function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: numbe
  * a gateway round trip to every client's connection check for no more truth,
  * since admission is checked against this same table regardless.
  */
-function modelsBody(prices: Readonly<Record<string, PriceEntry>>): { object: "list"; data: Array<{ id: string; object: "model"; created: number; owned_by: string }> } {
+function modelsBody(prices: Readonly<Record<string, PriceEntry>>, defaultOwner: string): { object: "list"; data: Array<{ id: string; object: "model"; created: number; owned_by: string }> } {
   const data = Object.entries(prices)
     .map(([id, price]) => {
       const created = Math.floor(Date.parse(price.verifiedAt) / 1000);
@@ -117,7 +117,7 @@ function modelsBody(prices: Readonly<Record<string, PriceEntry>>): { object: "li
         id,
         object: "model" as const,
         created: Number.isFinite(created) ? created : 0,
-        owned_by: slash === -1 ? "orbio" : id.slice(0, slash)
+        owned_by: slash === -1 ? defaultOwner : id.slice(0, slash)
       };
     })
     .sort((a, b) => a.id.localeCompare(b.id));
@@ -185,11 +185,10 @@ export class StreamAccumulator {
     if (typeof reported === "number" && Number.isFinite(reported)) return reported;
     return estimateOutputTokens(this.text);
   }
-
-  cost(): number | null {
-    const cost = this.usage?.cost;
-    return typeof cost === "number" && Number.isFinite(cost) ? cost : null;
-  }
+  // No cost() method: reading a real cost out of `usage` is provider-specific
+  // (see Provider.readExactCostUsd), and this class stays purely mechanical --
+  // it accumulates whatever the stream sent, and does not know what any of the
+  // fields mean.
 }
 
 export class SentinelProxy {
@@ -278,7 +277,7 @@ export class SentinelProxy {
         sendJson(res, 500, { error: { message: "Sentinel proxy has no usable price table; refusing to report an empty model list.", type: "api_error", code: "sentinel_no_price_table", param: null } });
         return;
       }
-      sendJson(res, 200, modelsBody(this.config.prices));
+      sendJson(res, 200, modelsBody(this.config.prices, this.config.provider.name));
       return;
     }
     if (req.method === "GET" && url === "/healthz") {
@@ -291,6 +290,8 @@ export class SentinelProxy {
         reserved_total: state.reservedTotal,
         remaining_usd: this.remainingUsd(),
         upstream: UPSTREAM_URL,
+        provider: this.config.provider.name,
+        cost_reporting: this.config.provider.costReporting,
         key_configured: Boolean(this.config.apiKey),
         daily_cap_usd: this.config.dailyCapUsd,
         daily_committed_usd: this.dailyCommittedUsd(),
@@ -330,7 +331,7 @@ export class SentinelProxy {
     // Refuse before reserving when we could not dispatch anyway: a reservation we
     // cannot spend is budget held against nothing.
     if (!this.config.apiKey) {
-      sendJson(res, 503, { error: { message: "Sentinel proxy has no upstream key configured. Set ORBIO_API_KEY.", type: "api_error", code: "sentinel_no_upstream_key", param: null } });
+      sendJson(res, 503, { error: { message: `Sentinel proxy has no ${this.config.provider.name} key configured. Set ${this.config.provider.apiKeyEnvVar}.`, type: "api_error", code: "sentinel_no_upstream_key", param: null } });
       return;
     }
 
@@ -406,7 +407,7 @@ export class SentinelProxy {
         method: "POST",
         headers: {
           "content-type": "application/json",
-          authorization: `Bearer ${this.config.apiKey}`,
+          ...this.config.provider.authHeaders(this.config.apiKey ?? ""),
           accept: streaming ? "text/event-stream" : "application/json"
         },
         body: JSON.stringify(upstreamBody),
@@ -456,9 +457,8 @@ export class SentinelProxy {
     let cost: number | null = null;
     let outputTokens: number | undefined;
     try {
-      const parsed = JSON.parse(text) as { usage?: { cost?: unknown; completion_tokens?: unknown }; choices?: unknown };
-      const rawCost = parsed.usage?.cost;
-      if (typeof rawCost === "number" && Number.isFinite(rawCost)) cost = rawCost;
+      const parsed = JSON.parse(text) as { usage?: Record<string, unknown>; choices?: unknown };
+      cost = this.config.provider.readExactCostUsd(parsed.usage);
       const rawTokens = parsed.usage?.completion_tokens;
       if (typeof rawTokens === "number" && Number.isFinite(rawTokens)) outputTokens = rawTokens;
     } catch { /* fall through to the estimated path */ }
@@ -509,7 +509,7 @@ export class SentinelProxy {
       cut = error instanceof Error ? error : new Error(String(error));
     }
 
-    const cost = accumulator.cost();
+    const cost = this.config.provider.readExactCostUsd(accumulator.usage ?? undefined);
     if (cut === null && cost !== null) {
       await this.commitExactAndPersist(reservation, cost);
       console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)} (stream)`);
@@ -537,13 +537,14 @@ export class SentinelProxy {
     this.sweeper.unref();
     server.listen(this.config.port, BIND_HOST, () => {
       console.log(`Sentinel proxy listening on http://${BIND_HOST}:${this.config.port}${ROUTE}`);
+      console.log(`  provider          ${this.config.provider.name} (${this.config.provider.costReporting === "exact" ? "reports exact cost per call" : "cost is Sentinel's estimate, not this provider's invoice"})`);
       console.log(`  upstream          ${UPSTREAM_URL}`);
       console.log(`  budget            ${usd(this.config.budgetUsd)} (safety x${this.config.reservationSafetyMultiplier})`);
       console.log(`  daily cap         ${usd(this.config.dailyCapUsd)}, ${usd(this.dailyCommittedUsd())} already committed today`);
       console.log(`  reservation TTL   ${this.config.reservationTtlMs}ms`);
       console.log(`  default max_tokens ${this.config.defaultMaxTokens} (injected when the client sends none)`);
       console.log(`  price table       ${Object.keys(this.config.prices).length} models from ${this.config.priceSource ?? "static"} (verified ${this.config.priceVerifiedAt ?? "unknown"})`);
-      console.log(`  upstream key      ${this.config.apiKey ? "configured (held here, never forwarded to clients)" : "MISSING - requests will be refused with 503"}`);
+      console.log(`  upstream key      ${this.config.apiKey ? "configured (held here, never forwarded to clients)" : "MISSING - requests will be refused with 503"} (${this.config.provider.apiKeyEnvVar})`);
       console.log(`  client auth       none - loopback trust only, any bearer the client sends is discarded`);
       // "Any bearer is discarded" is a security fact, not an instruction: a
       // stranger reading it still doesn't know what to type into an editor's
@@ -568,18 +569,18 @@ export class SentinelProxy {
  */
 export async function main(): Promise<void> {
   const base = loadConfig();
-  const table = await resolvePriceTable({ modelsUrl: base.modelsUrl, cachePath: base.priceCachePath });
+  const table = await resolvePriceTable({ modelsUrl: base.modelsUrl, cachePath: base.priceCachePath, staticPrices: base.provider.staticPrices });
 
   if (table.source === "gateway") {
     console.log(
-      `[prices] ${table.modelCount} models priced from the gateway ` +
+      `[prices] ${table.modelCount} models priced from ${base.provider.name} ` +
       `(${table.free} free, ${table.skipped} refused: no per-token price).`
     );
   } else {
     console.warn(`[prices] using the ${table.source} table (${table.modelCount} models): ${table.note}`);
   }
 
-  for (const line of priceDrift(table.prices)) console.warn(`[prices] DRIFT ${line}`);
+  for (const line of priceDrift(table.prices, base.provider.staticPrices)) console.warn(`[prices] DRIFT ${line}`);
 
   // Seed from today's stored total before the governor exists: its budget is the
   // cap minus what today already spent, so a restart cannot hand back a fresh one.

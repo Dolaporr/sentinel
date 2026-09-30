@@ -1,7 +1,6 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { PriceEntry } from "../governor/types.js";
-import { prices as staticPrices } from "./mission-constants.js";
 
 export type PriceSource = "gateway" | "cache" | "static";
 
@@ -83,11 +82,13 @@ export function parseModelsResponse(payload: unknown, verifiedAt: string): { pri
 }
 
 /**
- * Compares a freshly fetched table against the hardcoded one. Silent drift here
- * is finding 06's failure: every admission check passes cleanly while being
- * computed against the wrong number. Cheap to check, so we always check.
+ * Compares a freshly fetched table against a provider's own hardcoded
+ * reference. Silent drift here is finding 06's failure: every admission check
+ * passes cleanly while being computed against the wrong number. Cheap to
+ * check, so we always check -- against whichever provider is active, not a
+ * single hardcoded table, since each provider keeps its own.
  */
-export function priceDrift(fetched: Readonly<Record<string, PriceEntry>>): string[] {
+export function priceDrift(fetched: Readonly<Record<string, PriceEntry>>, staticPrices: Readonly<Record<string, PriceEntry>>): string[] {
   const drift: string[] = [];
   for (const [model, known] of Object.entries(staticPrices)) {
     const live = fetched[model];
@@ -130,8 +131,27 @@ function writeCache(path: string, table: PriceTable): void {
  * known good cache, then the hardcoded table. The table is held for the life of
  * the process; it is never re-fetched per request.
  */
-export async function resolvePriceTable(options: { modelsUrl: string; cachePath: string; timeoutMs?: number }): Promise<PriceTable> {
+export async function resolvePriceTable(options: { modelsUrl: string | null; cachePath: string; staticPrices: Readonly<Record<string, PriceEntry>>; timeoutMs?: number }): Promise<PriceTable> {
   const verifiedAt = new Date().toISOString();
+  // A provider with no fetchable price listing (e.g. plain OpenAI) has
+  // nothing to fetch, not a fetch that failed -- go straight to the same
+  // cache-then-static chain a real fetch failure falls into below, rather
+  // than attempting a request that was never going to succeed and logging a
+  // misleading "gateway fetch failed" for a gateway that doesn't exist.
+  if (options.modelsUrl === null) {
+    const cached = readCache(options.cachePath);
+    if (cached) return cached;
+    return {
+      prices: options.staticPrices,
+      source: "static",
+      verifiedAt: Object.values(options.staticPrices)[0]?.verifiedAt ?? "unknown",
+      modelCount: Object.keys(options.staticPrices).length,
+      skipped: 0,
+      free: 0,
+      unboundable: new Set<string>(),
+      note: "no live price endpoint for this provider; using the hardcoded table"
+    };
+  }
   try {
     const response = await fetch(options.modelsUrl, {
       headers: { accept: "application/json" },
@@ -152,10 +172,10 @@ export async function resolvePriceTable(options: { modelsUrl: string; cachePath:
     const cached = readCache(options.cachePath);
     if (cached) return cached;
     return {
-      prices: staticPrices,
+      prices: options.staticPrices,
       source: "static",
-      verifiedAt: Object.values(staticPrices)[0]?.verifiedAt ?? "unknown",
-      modelCount: Object.keys(staticPrices).length,
+      verifiedAt: Object.values(options.staticPrices)[0]?.verifiedAt ?? "unknown",
+      modelCount: Object.keys(options.staticPrices).length,
       skipped: 0,
       free: 0,
       unboundable: new Set<string>(),
