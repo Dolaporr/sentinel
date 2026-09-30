@@ -1,20 +1,7 @@
-import { RESERVATION_SAFETY_MULTIPLIER, SESSION_CEILING_USD, prices } from "./mission-constants.js";
+import { RESERVATION_SAFETY_MULTIPLIER, SESSION_CEILING_USD } from "./mission-constants.js";
 import type { PriceEntry } from "../governor/types.js";
-
-/**
- * §2 step 5: always the www host. The apex `orbio.so` answers a POST with a 308,
- * and a redirected POST loses its body. Verified 2026-09-20: apex returns 308 to
- * www, and www preserves the Authorization header (a bogus key is rejected as
- * `invalid_api_key`, not `missing_api_key`, so the header survives the hop).
- */
-export const DEFAULT_UPSTREAM_URL = "https://www.orbio.so/api/v1/chat/completions";
-
-/**
- * Overridable only so the streaming and refusal paths can be exercised against a
- * local stub without a live key. It defaults to the www host above; point it
- * anywhere else and you are no longer testing the real gateway.
- */
-export const UPSTREAM_URL = process.env.SENTINEL_PROXY_UPSTREAM ?? DEFAULT_UPSTREAM_URL;
+import { DEFAULT_PROVIDER_NAME, resolveProvider } from "./providers/registry.js";
+import type { Provider } from "./providers/types.js";
 
 /**
  * Loopback only, and deliberately not configurable. The proxy holds the real
@@ -23,8 +10,29 @@ export const UPSTREAM_URL = process.env.SENTINEL_PROXY_UPSTREAM ?? DEFAULT_UPSTR
  */
 export const BIND_HOST = "127.0.0.1";
 
-/** The price table's source. Derived from the upstream so both track one host. */
-export const MODELS_URL = process.env.SENTINEL_PROXY_MODELS_URL ?? UPSTREAM_URL.replace(/\/chat\/completions$/, "/models");
+/**
+ * SENTINEL_PROVIDER selects one of orbio | openrouter | openai (see
+ * src/proxy/providers/). Unset behaves exactly as before this existed:
+ * Orbio, unchanged. An unrecognised name fails closed at startup, the same
+ * way an unpriced model fails closed at admission -- never a silent default.
+ */
+export const PROVIDER_NAME = process.env.SENTINEL_PROVIDER ?? DEFAULT_PROVIDER_NAME;
+export const PROVIDER: Provider = resolveProvider(PROVIDER_NAME);
+
+/**
+ * Overridable only so the streaming and refusal paths can be exercised against a
+ * local stub without a live key. It defaults to the active provider's own
+ * endpoint; point it anywhere else and you are no longer testing that provider.
+ */
+export const UPSTREAM_URL = process.env.SENTINEL_PROXY_UPSTREAM ?? PROVIDER.chatCompletionsUrl;
+
+/**
+ * The price table's source. Derived from the provider so both track one host,
+ * unless the provider has no such endpoint at all (modelsUrl: null), in which
+ * case there is nothing to derive and resolvePriceTable goes straight to its
+ * cache-then-static fallback.
+ */
+export const MODELS_URL = process.env.SENTINEL_PROXY_MODELS_URL ?? PROVIDER.modelsUrl;
 
 export interface ProxyConfig {
   port: number;
@@ -42,8 +50,10 @@ export interface ProxyConfig {
   defaultMaxTokens: number;
   apiKey: string | undefined;
   ledgerPath: string | undefined;
-  /** Where the live price table is fetched from at startup. */
-  modelsUrl: string;
+  /** Where the live price table is fetched from at startup, or null if this provider has none. */
+  modelsUrl: string | null;
+  /** The active provider: dispatch URL, auth shape, and cost read-back. See src/proxy/providers/. */
+  provider: Provider;
   /** Last known good price table, used when the gateway fetch fails. */
   priceCachePath: string;
   /** Provenance of `prices`, surfaced on /healthz. Set once the table resolves. */
@@ -82,11 +92,28 @@ export function loadConfig(): ProxyConfig {
     reservationTtlMs: int("SENTINEL_PROXY_RESERVATION_TTL_MS", 120_000),
     reservationSafetyMultiplier: RESERVATION_SAFETY_MULTIPLIER,
     maxStepBudgetFraction: 1,
-    prices,
+    prices: PROVIDER.staticPrices,
     defaultMaxTokens: int("SENTINEL_PROXY_DEFAULT_MAX_TOKENS", 1_024),
-    apiKey: process.env.ORBIO_API_KEY ?? process.env.OPENROUTER_API_KEY,
+    apiKey: resolveApiKey(),
     ledgerPath: process.env.SENTINEL_PROXY_LEDGER,
     modelsUrl: MODELS_URL,
+    provider: PROVIDER,
     priceCachePath: process.env.SENTINEL_PROXY_PRICE_CACHE ?? ".cache/price-table.json"
   };
+}
+
+/**
+ * ORBIO_API_KEY was, historically, also readable from OPENROUTER_API_KEY --
+ * an alias from before the provider name was settled on. Once a provider is
+ * explicitly selected, that alias would be a real hazard: someone setting
+ * SENTINEL_PROVIDER=openrouter with their own OPENROUTER_API_KEY expects it
+ * to mean the OpenRouter provider's key, not a stand-in for Orbio's. So the
+ * alias survives only while the active provider is (or defaults to) orbio;
+ * every other provider reads its own env var and nothing else.
+ */
+function resolveApiKey(): string | undefined {
+  const own = process.env[PROVIDER.apiKeyEnvVar];
+  if (own) return own;
+  if (PROVIDER_NAME === "orbio") return process.env.OPENROUTER_API_KEY;
+  return undefined;
 }

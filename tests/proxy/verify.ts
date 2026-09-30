@@ -20,6 +20,7 @@ import {
   estimateTokens as proxyEstimateTokens
 } from "../../src/proxy/mission-constants.js";
 import { SESSION_CEILING_USD, estimateTokens } from "../../src/runner/d2-mission.js";
+import { orbioProvider } from "../../src/proxy/providers/orbio.js";
 
 process.env.SENTINEL_PROXY_UPSTREAM ??= "http://127.0.0.1:9911/api/v1/chat/completions";
 const { SentinelProxy } = await import("../../src/proxy/server.js");
@@ -111,6 +112,7 @@ function makeProxy(port: number, budgetUsd = 0.25, extra: Record<string, unknown
     priceVerifiedAt: "test",
     dailyCapUsd: 3,
     spendPath: `/tmp/sentinel-verify-spend-${port}.json`,
+    provider: orbioProvider,
     ...extra
   });
 }
@@ -292,14 +294,14 @@ async function run() {
   check("unparseable and per-asset models skipped", parsed.skipped === 2, String(parsed.skipped));
   check("per-million conversion is exact, not 0.39999...", parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd === 0.4,
     String(parsed.prices["openai/gpt-4.1-mini"].inputPerMillionUsd));
-  check("no false drift against the hardcoded table", priceDrift(parsed.prices).filter((d) => d.includes("gpt-4.1-mini")).length === 0);
+  check("no false drift against the hardcoded table", priceDrift(parsed.prices, prices).filter((d) => d.includes("gpt-4.1-mini")).length === 0);
   check("a real price change is reported as drift",
-    priceDrift({ "openai/gpt-4.1-mini": { inputPerMillionUsd: 0.9, outputPerMillionUsd: 1.6, verifiedAt: "x" } }).some((d) => d.includes("0.9")));
+    priceDrift({ "openai/gpt-4.1-mini": { inputPerMillionUsd: 0.9, outputPerMillionUsd: 1.6, verifiedAt: "x" } }, prices).some((d) => d.includes("0.9")));
 
   const cachePath = "/tmp/sentinel-verify-chain.json";
   try { (await import("node:fs")).unlinkSync(cachePath); } catch { /* fresh run */ }
   const unreachable = "http://127.0.0.1:9/api/v1/models";
-  const staticTable = await resolvePriceTable({ modelsUrl: unreachable, cachePath, timeoutMs: 500 });
+  const staticTable = await resolvePriceTable({ modelsUrl: unreachable, cachePath, staticPrices: prices, timeoutMs: 500 });
   check("unreachable gateway with no cache falls back to static", staticTable.source === "static", staticTable.source);
 
   const stubModels = createServer((_req, res) => {
@@ -308,11 +310,11 @@ async function run() {
   });
   stubModels.listen(9912);
   await new Promise((r) => setTimeout(r, 150));
-  const live = await resolvePriceTable({ modelsUrl: "http://127.0.0.1:9912/models", cachePath, timeoutMs: 2_000 });
+  const live = await resolvePriceTable({ modelsUrl: "http://127.0.0.1:9912/models", cachePath, staticPrices: prices, timeoutMs: 2_000 });
   check("reachable gateway is used", live.source === "gateway", live.source);
   stubModels.close();
 
-  const cached = await resolvePriceTable({ modelsUrl: unreachable, cachePath, timeoutMs: 500 });
+  const cached = await resolvePriceTable({ modelsUrl: unreachable, cachePath, staticPrices: prices, timeoutMs: 500 });
   check("cache is used when the gateway later fails", cached.source === "cache", cached.source);
   check("cached table has the models", Object.keys(cached.prices).length === 3, String(Object.keys(cached.prices).length));
 
