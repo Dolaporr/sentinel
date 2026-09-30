@@ -581,6 +581,9 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigateReplay }) =>
                 <p className="text-rule-dim">
                   Holds your real upstream key locally in <span className="text-argent">.env</span> as <span className="text-argent">ORBIO_API_KEY</span>. Your agent tool never sees it.
                 </p>
+                <p className="text-rule-dim">
+                  One provider per instance, chosen with <span className="text-argent">SENTINEL_PROVIDER</span>. Orbio and OpenRouter both report the gateway&apos;s real billed cost (<span className="text-argent">exact</span>). A provider that reports no cost figure would have one computed from Sentinel&apos;s own price table instead (<span className="text-argent">estimated</span>) — that&apos;s Sentinel&apos;s arithmetic, not the provider&apos;s invoice, and it can&apos;t see cached-token discounts, tiered pricing, or an unpublished price change. None of the wired-in providers are in that state today.
+                </p>
               </div>
             </div>
           </section>

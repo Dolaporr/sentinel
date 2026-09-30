@@ -3,7 +3,10 @@
 ## Requirements
 
 - Node.js **20 or newer**. Node 18 is not supported by this release.
-- An Orbio gateway key in `ORBIO_API_KEY`. Keep it in `.env`; it is ignored by Git.
+- A gateway key for your chosen provider: `ORBIO_API_KEY` (default) or
+  `OPENROUTER_API_KEY` (with `SENTINEL_PROVIDER=openrouter`). Keep it in
+  `.env`; it is ignored by Git. Only one provider runs per proxy instance —
+  see "Providers and cost accuracy" below.
 
 ## Start the local proxy
 
@@ -25,6 +28,19 @@ see [`docs/PROXY.md`](docs/PROXY.md) for which ones have.
 
 Use any non-empty client API key, for example `sentinel-local`; the proxy
 discards it. The real gateway key stays in the proxy process.
+
+## Providers and cost accuracy
+
+`SENTINEL_PROVIDER` picks the gateway: `orbio` (default) or `openrouter`.
+Both report **real, exact cost** — each returns `usage.cost` on the response,
+and Sentinel commits that figure as-is (`cost_source: "exact"`). Neither is
+computed by Sentinel. A provider that doesn't report a cost figure would have
+one **estimated** by Sentinel from a static price table instead, labelled
+`cost_source: "estimated"` — that label means Sentinel's own arithmetic, not
+the provider's invoice, and it can't see cached-token discounts, tiered
+pricing, or a price change the provider hasn't published. No such provider is
+wired in yet; the banner and `/healthz` (`cost_reporting`) always name the
+active provider and which kind of number you're looking at.
 
 ## Verify without spending
 

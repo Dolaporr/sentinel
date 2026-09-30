@@ -100,10 +100,13 @@ model-prefix routing in a single process — if you need two providers at once,
 run two instances on two ports. Routing between providers is a real design
 problem in its own right and is out of scope here.
 
-Currently wired: **Orbio only**, behind the interface but behaving exactly as
-before it existed — see the existing test suite, unchanged and green. OpenRouter
-and OpenAI are in progress; see the "Known limitations" note below for the
-current state.
+Currently wired: **Orbio and OpenRouter**, both reporting `exact` cost read
+back from `usage.cost` on the response. Orbio sits behind the interface
+behaving exactly as before it existed — see the existing test suite,
+unchanged and green. OpenRouter was verified live (SENTINEL_PROVIDERS.md §0)
+before it was built: a real call, streaming and non-streaming, returns
+`usage.cost` inline, so no follow-up-by-id call was needed. OpenAI is in
+progress; see the "Known limitations" note below for the current state.
 
 ## The price table
 
@@ -304,9 +307,15 @@ the output.
   gateway does honour `stream_options: {include_usage: true}`, so streamed calls
   currently commit as exact — this is a reporting gap, not an accounting one,
   until a stream is cut.
-- **Only Orbio is wired in as of this writing.** `SENTINEL_PROVIDER` exists and
-  fails closed on an unrecognised name, but `openrouter` and `openai` are not
-  yet registered providers — selecting either fails at startup with "Unknown
-  SENTINEL_PROVIDER" until that work lands. The refactor that put Orbio behind
-  the interface is complete and proven against the unchanged existing suite;
-  the other two providers are in progress.
+- **Orbio and OpenRouter are wired in; OpenAI is not, as of this writing.**
+  `SENTINEL_PROVIDER` exists and fails closed on an unrecognised name, and
+  `openai` is not yet a registered provider — selecting it fails at startup
+  with "Unknown SENTINEL_PROVIDER" until that work lands. The refactor that
+  put Orbio behind the interface is complete and proven against the unchanged
+  existing suite. OpenRouter is complete too: verified live end-to-end through
+  the running proxy with a real admitted call (`cost_source: exact`, its
+  dollar figure matching what OpenRouter itself billed via `usage.cost`) and a
+  real refusal. Both providers report `exact` cost today, since both happen to
+  return `usage.cost` on the response — neither computes a number itself.
+  OpenAI reports no such field, so it will be Sentinel's first `estimated`
+  provider once it lands; watch for that label, not `exact`, when it does.

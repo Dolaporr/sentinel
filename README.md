@@ -79,6 +79,17 @@ puts the governor in front of every chat-completions request. It is a single
 custodian process rather than a library convention; the tool receives only a
 throwaway local token while the real Orbio key remains in the proxy.
 
+The proxy runs one gateway per instance, chosen with `SENTINEL_PROVIDER`.
+**Orbio and OpenRouter report real cost** — both return `usage.cost` on the
+response, so Sentinel commits exactly what the gateway billed
+(`cost_source: "exact"`). A provider that reports no such figure would have
+its cost **computed by Sentinel's own arithmetic from a static price table**
+and labelled `cost_source: "estimated"` — that label means Sentinel's own
+math, not the provider's invoice, and it cannot see cached-token discounts,
+volume tiers, or a price change the provider made without updating its table.
+No provider in this state is wired in today. The banner and `/healthz`
+(`cost_reporting`) always say, per provider, which one you're looking at.
+
 The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
 not claimed until each has completed a real request through it.

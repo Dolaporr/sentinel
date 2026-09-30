@@ -1,11 +1,13 @@
+import { openrouterProvider } from "./openrouter.js";
 import { orbioProvider } from "./orbio.js";
 import type { Provider, ProviderName } from "./types.js";
 
 const PROVIDERS: Record<ProviderName, Provider> = {
   orbio: orbioProvider,
-  // openrouter and openai are added once SENTINEL_PROVIDERS.md §0 and §3 are
-  // done; resolveProvider fails closed on their names until then, same as any
-  // other unrecognised value.
+  openrouter: openrouterProvider,
+  // openai is added once SENTINEL_PROVIDERS.md §3 step 3 is done;
+  // resolveProvider fails closed on its name until then, same as any other
+  // unrecognised value.
 } as Record<ProviderName, Provider>;
 
 export class UnknownProviderError extends Error {

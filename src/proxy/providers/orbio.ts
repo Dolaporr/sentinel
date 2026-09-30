@@ -25,6 +25,11 @@ export const orbioProvider: Provider = {
   staticPrices,
   costReporting: "exact",
   authHeaders: (apiKey) => ({ authorization: `Bearer ${apiKey}` }),
+  // Identical to OpenRouter's today -- both happen to key real cost as usage.cost.
+  // Written out per-provider on purpose rather than shared: this method is the
+  // one place "exact" can get blurred into "estimated" by accident, and a
+  // future change to one provider's response shape must not silently reach
+  // into another's through a shared helper.
   readExactCostUsd: (usage) => {
     const cost = usage?.cost;
     return typeof cost === "number" && Number.isFinite(cost) ? cost : null;
