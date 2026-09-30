@@ -11,7 +11,7 @@
  */
 import "dotenv/config";
 
-const USAGE = `sentinel-proxy - a budget-enforcing proxy in front of the Orbio gateway
+const USAGE = `sentinel-proxy - a budget-enforcing proxy in front of an LLM gateway
 
 Usage:
   npx github:Dolaporr/sentinel [options]
@@ -24,9 +24,13 @@ Options:
   -V, --version        Print the version.
 
 Environment:
-  ORBIO_API_KEY        Required. The gateway key. Held by the proxy and never
-                       forwarded to clients. Read from the environment or from
-                       a .env file in the current directory.
+  SENTINEL_PROVIDER    Which gateway to run: orbio (default) or openrouter.
+                       One provider per instance -- see docs/PROXY.md.
+  ORBIO_API_KEY        Required when the provider is orbio (the default).
+  OPENROUTER_API_KEY   Required when the provider is openrouter.
+                       Whichever key is required is held by the proxy and
+                       never forwarded to clients. Read from the environment
+                       or from a .env file in the current directory.
 
 The proxy binds to 127.0.0.1 only. Spend is tracked in .cache/spend.json in the
 current directory and survives restarts, so restarting does not grant a fresh
@@ -79,28 +83,6 @@ async function run() {
     return;
   }
 
-  // Checked here rather than in the server so a missing key reads as advice
-  // instead of a 503 on the first request or a throw during startup.
-  if (!process.env.ORBIO_API_KEY && !process.env.OPENROUTER_API_KEY) {
-    // Most of the people who reach this via `npx github:...` are on Windows,
-    // and `export` is not a PowerShell command -- it fails with "the term
-    // 'export' is not recognized", which gets someone stuck on shell syntax
-    // instead of on Sentinel. Print the line that actually runs on their shell.
-    const shellLine = process.platform === "win32"
-      ? '  $env:ORBIO_API_KEY="sk-..."        # current PowerShell window'
-      : "  export ORBIO_API_KEY=sk-...          # current shell";
-    console.error("sentinel-proxy: ORBIO_API_KEY is not set.");
-    console.error("");
-    console.error("The proxy holds your gateway key and spends against it, so it will not");
-    console.error("start without one. Supply it in either of these ways:");
-    console.error("");
-    console.error(shellLine);
-    console.error("  echo 'ORBIO_API_KEY=sk-...' > .env   # this directory");
-    console.error("");
-    console.error("Then run the command again.");
-    process.exit(1);
-  }
-
   // The session ceiling and the daily cap are separate controls, and the
   // effective budget is the lower of the two. Setting only one would leave
   // `--budget 5` silently clamped to the $3 default cap.
@@ -112,9 +94,42 @@ async function run() {
 
   // tsx is registered at runtime because the server is TypeScript and this
   // package ships its sources rather than a build. Registering in-process keeps
-  // it to one process, so Ctrl-C reaches the server directly.
+  // it to one process, so Ctrl-C reaches the server directly. Registered before
+  // the key check below so that check can ask config.ts which provider is
+  // active and which env var it actually needs, instead of a hardcoded guess
+  // that would silently go stale the next time a provider is added.
   const { register } = await import("tsx/esm/api");
   register();
+
+  // An unrecognised SENTINEL_PROVIDER throws from inside this import (config.ts
+  // resolves it at module load) and is caught by the top-level handler below,
+  // which already prints "Unknown SENTINEL_PROVIDER ..." as a clean one-liner --
+  // verified 2026-09-30, so this file does not duplicate that message.
+  const { PROVIDER, resolveApiKey } = await import(new URL("../src/proxy/config.ts", import.meta.url).href);
+
+  // Checked here rather than in the server so a missing key reads as advice
+  // instead of a 503 on the first request or a throw during startup.
+  if (!resolveApiKey()) {
+    // Most of the people who reach this via `npx github:...` are on Windows,
+    // and `export` is not a PowerShell command -- it fails with "the term
+    // 'export' is not recognized", which gets someone stuck on shell syntax
+    // instead of on Sentinel. Print the line that actually runs on their shell.
+    const envVar = PROVIDER.apiKeyEnvVar;
+    const shellLine = process.platform === "win32"
+      ? `  $env:${envVar}="sk-..."        # current PowerShell window`
+      : `  export ${envVar}=sk-...          # current shell`;
+    console.error(`sentinel-proxy: ${envVar} is not set.`);
+    console.error("");
+    console.error(`The proxy is configured for the "${PROVIDER.name}" provider (SENTINEL_PROVIDER),`);
+    console.error("which holds your gateway key and spends against it, so it will not start");
+    console.error("without one. Supply it in either of these ways:");
+    console.error("");
+    console.error(shellLine);
+    console.error(`  echo '${envVar}=sk-...' > .env   # this directory`);
+    console.error("");
+    console.error("Then run the command again.");
+    process.exit(1);
+  }
 
   const server = await import(new URL("../src/proxy/server.ts", import.meta.url).href);
   await server.main();

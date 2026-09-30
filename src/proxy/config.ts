@@ -120,7 +120,7 @@ export function loadConfig(): ProxyConfig {
  * alias survives only while the active provider is (or defaults to) orbio;
  * every other provider reads its own env var and nothing else.
  */
-function resolveApiKey(): string | undefined {
+export function resolveApiKey(): string | undefined {
   const own = process.env[PROVIDER.apiKeyEnvVar];
   if (own) return own;
   if (PROVIDER_NAME === "orbio") return process.env.OPENROUTER_API_KEY;
