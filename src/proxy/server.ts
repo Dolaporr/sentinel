@@ -8,7 +8,7 @@ import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governo
 import { BIND_HOST, UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
 import { priceDrift, resolvePriceTable } from "./prices.js";
 import { DailySpendStore, resolveDailyBudget } from "./spend.js";
-import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
+import { deriveInputTokens, estimateOutputTokens, outputCeiling, withOutputCeiling, type ChatCompletionRequest } from "./messages.js";
 import { agentLabelFromHeader } from "./agent-label.js";
 import { buildLedgerViewModel, CallLedger } from "./call-ledger.js";
 
@@ -397,6 +397,8 @@ export class SentinelProxy {
     const model = typeof body.model === "string" ? body.model : "";
     if (!model) { sendJson(res, 400, { error: { message: "`model` is required.", type: "invalid_request_error", code: "invalid_body", param: "model" } }); return; }
     if (!Array.isArray(body.messages)) { sendJson(res, 400, { error: { message: "`messages` must be an array.", type: "invalid_request_error", code: "invalid_body", param: "messages" } }); return; }
+    const ceiling = outputCeiling(body);
+    if (!ceiling.ok) { sendJson(res, 400, { error: { message: ceiling.message, type: "invalid_request_error", code: "sentinel_field_refused", param: ceiling.param } }); return; }
 
     // The client's bearer token was already ignored for authentication; it
     // becomes an attribution label instead. Extracted here, before any
@@ -439,7 +441,7 @@ export class SentinelProxy {
 
     // §2 step 3: an absent ceiling is an unbounded worst case. Inject one, and
     // forward it, so the bound we reserve against binds the gateway too.
-    const declaredMaxTokens = typeof body.max_tokens === "number" && body.max_tokens > 0 ? body.max_tokens : null;
+    const declaredMaxTokens = ceiling.declaredMaxTokens;
     const maxTokens = declaredMaxTokens ?? this.config.defaultMaxTokens;
     const maxTokensInjected = declaredMaxTokens === null;
 
@@ -479,7 +481,7 @@ export class SentinelProxy {
       `${maxTokensInjected ? " (injected)" : ""} reserved=${usd(reservation.amountUsd)} streaming=${streaming}`
     );
 
-    const upstreamBody: ChatCompletionRequest = { ...body, max_tokens: maxTokens };
+    const upstreamBody: ChatCompletionRequest = withOutputCeiling(body, maxTokens);
     if (streaming) {
       // §3: ask for usage on the terminating chunk. We verify rather than assume —
       // if the gateway ignores it, the accumulator falls back to observed output.
