@@ -87,10 +87,19 @@ export class GameRoundRunner {
     if (!pending?.playerId || pending.amountUsd === null) throw new Error("No pending prize exists for this run.");
     const alreadyGranted = this.store.all(this.season.id).some((event) => event.event === "PRIZE_ALLOCATION_GRANTED" && event.runId === runId);
     if (alreadyGranted) throw new Error("Prize has already been granted.");
+    // The hosted route has no idempotency key. If the process dies after its
+    // PATCH succeeds but before our granted event lands, retrying could credit
+    // the same prize twice. Preserve the ambiguous attempt and demand a human
+    // reconciliation against /admin/tokens before anyone tries again.
+    const applying = this.store.all(this.season.id).some((event) => event.event === "PRIZE_ALLOCATION_APPLYING" && event.runId === runId);
+    if (applying) throw new Error("Prize allocation is ambiguous after a prior apply attempt; reconcile against the hosted token before retrying.");
+    this.store.append(gameEvent("PRIZE_ALLOCATION_APPLYING", {
+      seasonId: this.season.id, runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason: "admin_allocation_requested", policyHash: pending.policyHash, raw: {}
+    }));
     const response = await allocations.grant({ playerId: pending.playerId, amountUsd: pending.amountUsd, reference: runId });
     this.store.append(gameEvent("PRIZE_ALLOCATION_GRANTED", {
       seasonId: this.season.id, runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason: "manual_allocation", policyHash: pending.policyHash,
-      raw: { allocation_id: response.allocationId, upstream: providerEvidence(response.raw) }
+      raw: { hosted_lifetime_allocation_usd: response.lifetimeAllocationUsd, upstream: providerEvidence(response.raw) }
     }));
   }
 }
