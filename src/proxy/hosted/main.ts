@@ -11,6 +11,7 @@ import { redact } from "../dispatch.js";
 import { TOKEN_PREFIX } from "./secrets.js";
 import { HostedGateway } from "./server.js";
 import type { HostedConfig } from "./state.js";
+import { createHostedGameRoutes } from "../../game/hosted-routes.js";
 
 export class HostedStartupError extends Error {}
 
@@ -77,6 +78,20 @@ export async function main(): Promise<void> {
     reservationSafetyMultiplier: RESERVATION_SAFETY_MULTIPLIER,
     defaultMaxTokens: Math.floor(num("SENTINEL_HOSTED_DEFAULT_MAX_TOKENS", 1_024))
   });
+
+  // Opt-in only: without this exact flag the hosted request surface is
+  // unchanged. The game has its own event store and pool, and dispatches via
+  // the same redacting custody path as hosted completions.
+  if (process.env.SENTINEL_GAME_ENABLED === "1") {
+    gateway.mountGameRoutes(createHostedGameRoutes({
+      dataPath: join(dataDir, "game-events.jsonl"), apiKey, provider,
+      upstreamUrl: process.env.SENTINEL_HOSTED_UPSTREAM ?? provider.chatCompletionsUrl,
+      prices: table.prices, store: gateway.store,
+      reservationTtlMs: num("SENTINEL_HOSTED_RESERVATION_TTL_MS", 120_000),
+      safetyMultiplier: RESERVATION_SAFETY_MULTIPLIER
+    }));
+    console.log("[game] mounted: one sealed-run route enabled");
+  }
 
   // The env values seed the state file once. After that, /admin/config owns
   // them, so a redeploy with stale env vars cannot silently undo a change.

@@ -27,6 +27,7 @@ import {
   adminTokenMatches, canonicalInviteCode, newHandle, newInviteCode, newUserToken, sha256, userTokenHashFromHeader
 } from "./secrets.js";
 import { HostedStateStore, utcDateKey, validAllocation, type HostedConfig } from "./state.js";
+import type { HostedGameRoutes } from "../../game/hosted-routes.js";
 
 const LEDGER_PAGE_PATH = fileURLToPath(new URL("../ledger.html", import.meta.url));
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -103,6 +104,8 @@ export class HostedGateway {
    * streak only pauses once it spans OPERATOR_FAULT_MIN_TOKENS distinct tokens.
    */
   private readonly operatorFaultTokens = new Set<string>();
+  /** Optional, flag-controlled mount. No game routes exist unless main adds it. */
+  private gameRoutes: HostedGameRoutes | undefined;
 
   constructor(private readonly config: HostedServerConfig) {
     this.clock = config.clock ?? (() => new Date());
@@ -127,11 +130,15 @@ export class HostedGateway {
     return this.store.config.modelAllowlist.filter((id) => this.config.prices[id]).sort();
   }
 
+  /** The one additive hosted-game touchpoint; main calls this only behind its flag. */
+  mountGameRoutes(routes: HostedGameRoutes): void { this.gameRoutes = routes; }
+
   async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = (req.url ?? "").split("?")[0];
     const method = req.method ?? "GET";
 
     if (url.startsWith("/admin/") || url === "/admin") { await this.handleAdmin(req, res, url, method); return; }
+    if (this.gameRoutes && await this.gameRoutes.handle(req, res, url, method)) return;
     if (method === "GET" && url === "/") { this.servePage(res); return; }
     if (method === "GET" && url === "/ledger.json") { sendJson(res, 200, this.ledgerView()); return; }
     // HEAD too: some platform health checks probe with it, and Node sends the
