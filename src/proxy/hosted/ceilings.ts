@@ -66,16 +66,6 @@ interface TenantEntry {
   seededUsd: number;
 }
 
-/**
- * Past this many reservations an idle tenant's governor is rebuilt. The frozen
- * governor never forgets a reservation (its map and its in-memory event list
- * only grow, and each reserve scans every reservation it has ever made), which
- * is harmless in a mission run and a slow leak in a service that runs for
- * weeks. Rebuilding when idle is state-equivalent: today's committed spend is
- * carried in the budget, and an idle governor holds nothing else.
- */
-const REBUILD_AFTER_RESERVATIONS = 200;
-
 export interface TenantSettings {
   reservationTtlMs: number;
   reservationSafetyMultiplier: number;
@@ -95,9 +85,11 @@ export class TenantGovernors {
   capReached(handle: string): boolean { return this.spentTodayUsd(handle) >= this.capUsd(); }
 
   /**
-   * The governor this request should reserve against. Rebuilt only while
-   * idle, so an in-flight reservation is never orphaned on an instance nobody
-   * consults any more; a quarantined instance is never rebuilt automatically.
+   * The governor this request should reserve against. Rebuilt when the UTC
+   * day or the cap changes -- its budget is fixed at construction -- but only
+   * while idle, so an in-flight reservation is never orphaned on an instance
+   * nobody consults any more. A quarantined instance is never rebuilt
+   * automatically.
    */
   governorFor(handle: string): BudgetGovernor {
     const date = this.store.today().date;
@@ -105,8 +97,8 @@ export class TenantGovernors {
     const existing = this.entries.get(handle);
     if (existing) {
       const snap = existing.governor.snapshot();
-      const idle = ![...snap.reservations.values()].some((r) => r.state === "active");
-      const stale = existing.date !== date || existing.capUsd !== capUsd || snap.reservations.size >= REBUILD_AFTER_RESERVATIONS;
+      const idle = snap.activeReservations === 0;
+      const stale = existing.date !== date || existing.capUsd !== capUsd;
       if (!stale || !idle || snap.quarantined) return existing.governor;
     }
     const seededUsd = this.spentTodayUsd(handle);
@@ -121,7 +113,8 @@ export class TenantGovernors {
         maxStepBudgetFraction: 1,
         prices: this.settings.prices()
       },
-      new ReservationLedger()
+      // Long-running service: recent events only. Our own call ledger is the record.
+      new ReservationLedger(undefined, { maxInMemoryEvents: 200 })
     );
     this.entries.set(handle, { governor, date, capUsd, seededUsd });
     return governor;

@@ -18,7 +18,7 @@ import type { AdmissionRefusalReason, PriceEntry } from "../../governor/types.js
 import { buildLedgerViewModel, CallLedger, type CallLedgerEntry } from "../call-ledger.js";
 import { dispatchAdmitted } from "../dispatch.js";
 import { modelsBody, readBody, sendJson, worstCaseUsd } from "../http.js";
-import { deriveInputTokens } from "../messages.js";
+import { deriveInputTokens, withOutputCeiling } from "../messages.js";
 import type { Provider } from "../providers/types.js";
 import { GlobalPool, TenantGovernors } from "./ceilings.js";
 import { RateLimiter } from "./rate-limit.js";
@@ -262,7 +262,7 @@ export class HostedGateway {
         upstreamUrl: this.config.upstreamUrl,
         provider: this.config.provider,
         apiKey: this.config.apiKey,
-        body: { ...body, max_tokens: maxTokens },
+        body: withOutputCeiling(body, maxTokens),
         streaming,
         reservation,
         res,
