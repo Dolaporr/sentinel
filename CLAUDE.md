@@ -15,9 +15,10 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   (in that order, resolving the conflicts where both touched `server.ts`, `config.ts`,
   `package.json`, and the docs); that authorisation covered those two merges only and the rule
   stands otherwise.
-- `src/governor/` is off-limits. The proxy consumes `BudgetGovernor` through its existing
-  public API only (`reserve`, `commitExact`, `commitEstimated`, `expire`, `snapshot`,
-  `assertStepFitsBudget`). It does not modify governor internals or the ledger.
+- `src/governor/` was frozen for the Build Week submission. By scope-owner decision on
+  2026-10-01 that freeze is lifted: Claude Code may change the governor and its ledger
+  (first change: bounded retention of resolved reservations and in-memory events).
+  `fixtures/` stays frozen.
 - Every other implementation directory (`src/worker/`, `src/orbio/`, `src/ledger/`,
   `src/runner/`, `src/core/`) stays Codex's. Touch them only with a new recorded decision.
 

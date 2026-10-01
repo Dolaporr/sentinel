@@ -116,6 +116,86 @@ async function testGovernorIsolation(): Promise<void> {
   assert.equal(rightLedger.count("MISSION_COMPLETE"), 1);
 }
 
+function retentionGovernor(retentionMs: number, ledger = new ReservationLedger()) {
+  return new BudgetGovernor({ budgetUsd: 1_000, reservationTtlMs: 100, reservationSafetyMultiplier: 1.25, maxStepBudgetFraction: 1, prices, resolvedRetentionMs: retentionMs }, ledger);
+}
+const step = (id: string, nowMs: number) => ({ attemptId: id, logicalCallId: id, model: "test/cheap", inputTokens: 0, maxTokens: 10, nowMs });
+
+async function testResolvedReservationsAreBounded(): Promise<void> {
+  const governor = retentionGovernor(1_000);
+  for (let i = 0; i < 5_000; i++) {
+    const admission = await governor.reserve(step(`a-${i}`, i));
+    assert.ok(admission.admitted);
+    assert.equal(await governor.commitExact(`a-${i}`, 0.000001, i), true);
+  }
+  const snap = governor.snapshot();
+  assert.equal(snap.activeReservations, 0);
+  assert.ok(snap.reservations.size <= 1_001, `resolved reservations are pruned past the window, kept ${snap.reservations.size}`);
+  assert.ok(snap.reservations.size >= 999, "but everything inside the window is still remembered");
+}
+
+async function testDuplicateRefusedInsideRetention(): Promise<void> {
+  const governor = retentionGovernor(1_000);
+  assert.ok((await governor.reserve(step("dup", 0))).admitted);
+  assert.equal(await governor.commitExact("dup", 0.000001, 1), true);
+  const reuse = await governor.reserve(step("dup", 500));
+  assert.equal(reuse.admitted ? null : reuse.reason, "DUPLICATE_ATTEMPT", "a resolved id cannot be reused while a late result for it could still arrive");
+}
+
+async function testLateResultAfterPruneStillQuarantines(): Promise<void> {
+  const ledger = new ReservationLedger();
+  const governor = retentionGovernor(1_000, ledger);
+  assert.ok((await governor.reserve(step("late", 0))).admitted);
+  await governor.expire(200);
+  await governor.expire(5_000); // long past the window: "late" is forgotten
+  assert.equal(governor.snapshot().reservations.has("late"), false);
+  assert.equal(await governor.commitExact("late", 0.01, 5_001), false, "a forgotten id is rejected exactly like a resolved one");
+  assert.equal(governor.snapshot().quarantined, true);
+  assert.equal(ledger.count("LATE_RESULT_REJECTED"), 1);
+}
+
+async function testLogicalCallIndexReleasesOnResolve(): Promise<void> {
+  const governor = retentionGovernor(1_000);
+  assert.ok((await governor.reserve({ ...step("x-1", 0), logicalCallId: "x" })).admitted);
+  const second = await governor.reserve({ ...step("x-2", 1), logicalCallId: "x" });
+  assert.equal(second.admitted ? null : second.reason, "LOGICAL_CALL_IN_FLIGHT");
+  await governor.commitExact("x-1", 0.000001, 2);
+  assert.ok((await governor.reserve({ ...step("x-3", 3), logicalCallId: "x" })).admitted, "a retry is admitted once the first attempt resolves");
+  await governor.expire(200);
+  assert.ok((await governor.reserve({ ...step("x-4", 201), logicalCallId: "x" })).admitted, "and once it expires");
+}
+
+async function testAdmissionCostDoesNotGrowWithHistory(): Promise<void> {
+  // Before bounded retention, every reserve() scanned every reservation ever
+  // made: 50k calls was ~1.25e9 comparisons. Now it is bounded by what is in flight.
+  const governor = retentionGovernor(1_000);
+  const started = Date.now();
+  for (let i = 0; i < 50_000; i++) {
+    await governor.reserve(step(`s-${i}`, i));
+    await governor.commitExact(`s-${i}`, 0.000001, i);
+  }
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 5_000, `50k reserve/commit cycles took ${elapsed}ms`);
+}
+
+function testLedgerBoundKeepsExactCounts(): void {
+  const ledger = new ReservationLedger(undefined, { maxInMemoryEvents: 100 });
+  const base = { attempt_id: null, logical_call_id: null, amount_usd: null, committed_exact: 0, committed_estimated: 0, reserved_total: 0, budget_usd: 1, cost_source: null, raw: {} };
+  for (let i = 0; i < 1_000; i++) ledger.append({ ...base, event: i % 2 ? "COST_COMMITTED" : "RESERVATION_CREATED" });
+  assert.equal(ledger.all().length, 100, "in-memory events are bounded when asked to be");
+  assert.equal(ledger.all().at(-1)?.seq, 1_000, "and the newest are the ones kept");
+  assert.equal(ledger.count("COST_COMMITTED"), 500, "counts stay exact over the ledger's whole life");
+  const unbounded = new ReservationLedger();
+  for (let i = 0; i < 300; i++) unbounded.append({ ...base, event: "COST_COMMITTED" });
+  assert.equal(unbounded.all().length, 300, "a mission ledger still keeps every event by default");
+}
+
+await testResolvedReservationsAreBounded();
+await testDuplicateRefusedInsideRetention();
+await testLateResultAfterPruneStillQuarantines();
+await testLogicalCallIndexReleasesOnResolve();
+await testAdmissionCostDoesNotGrowWithHistory();
+testLedgerBoundKeepsExactCounts();
 await testConcurrentAdmission();
 await testRetryReleaseRace();
 await testEstimatedAndUnknownPrice();

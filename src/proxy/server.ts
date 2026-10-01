@@ -112,7 +112,9 @@ export class SentinelProxy {
   private readonly ledgerPageHtml: string;
 
   constructor(private readonly config: ProxyConfig) {
-    this.ledger = new ReservationLedger(config.ledgerPath);
+    // A proxy runs for weeks: keep only recent governor events in memory.
+    // SENTINEL_PROXY_LEDGER, when set, still receives every one on disk.
+    this.ledger = new ReservationLedger(config.ledgerPath, { maxInMemoryEvents: 1_000 });
     this.callLedger = new CallLedger(config.callLedgerPath);
     this.spend = new DailySpendStore(config.spendPath);
     // Read once at startup: the page is a static asset that ships with the
