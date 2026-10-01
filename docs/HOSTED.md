@@ -45,7 +45,7 @@ as its API key.
    the same last cents. When the pool is gone, every caller gets one line:
    *"Sentinel's shared free pool is used up for today ($X of $Y). It resets at
    00:00 UTC, in 5h 12m. Nothing was sent or charged."*
-2. **Per-token daily cap.** One frozen `BudgetGovernor` per token, never shared.
+2. **Per-token daily cap.** One `BudgetGovernor` per token, never shared.
    Finding 13 is why: a shared governor turns one user's accounting fault into
    everyone's quarantine. Verified in `hosted:verify` — a token quarantined by an
    over-billed call leaves every other token serving.
@@ -81,10 +81,16 @@ change.
     refused with 503, reversible.
 - **Automatic pause on a broken operator key.** After `operatorFaultPauseAfter`
   (default 3) upstream 401/402s in a row — the operator's key rejected or out of
-  credit — the service pauses itself, persists why, and every caller gets one
-  line: *"Sentinel's free tier paused itself: the upstream provider rejected the
-  operator's key 3 times in a row (last: HTTP 401). This is on Sentinel's side,
-  not yours…"*. Any other upstream answer resets the count; a network failure,
+  credit — **coming from at least two different tokens**, the service pauses
+  itself, persists why, and every caller gets one line: *"Sentinel's free tier
+  paused itself: the upstream provider rejected the operator's key 3 times in a
+  row, across 2 different tokens (last: HTTP 401). This is on Sentinel's side,
+  not yours…"*. The two-token rule exists because a 402 can be caller-triggered
+  when the operator's balance is below one allowed request's cost; without it,
+  one caller repeating that request could pause everyone's free tier. With a
+  single active token a dead key therefore never auto-pauses — every request
+  still gets the operator-fault 503 and is charged nothing. Any other upstream
+  answer resets the count; a network failure,
   which says nothing about the key, leaves it alone. `POST /admin/resume` clears
   the pause and the count. Each of those failed calls is recorded at **$0,
   `cost_source: "not_billed"`** — no inference ran, so an estimate would be
@@ -199,12 +205,10 @@ curl -X POST $H/v1/redeem -d '{"code": "SNT-XXXX-XXXX-XXXX-XXXX"}'
   400, 429 or 5xx is settled as an estimated input-leg cost, never silently
   released, because there Sentinel cannot see whether the gateway billed. Only a
   401/402 — refused before any inference ran — is recorded as $0 not_billed.
-- **A caller can contribute to an automatic pause, in one narrow case.** A 401
-  is never caller-triggerable (the credentials are ours). A 402 can be, if the
-  operator's remaining balance is below one allowed request's cost: three such
-  requests in a row would pause the service. At that point the balance cannot
-  serve normal traffic either, so the pause is the right outcome, but it is a
-  way for one caller to stop everyone's free tier.
+- **Two callers acting together can still trip the automatic pause** with
+  caller-triggered 402s, if the operator's balance is below one allowed
+  request's cost. One cannot (see the two-token rule above). At that balance
+  normal traffic is failing anyway, so the pause is the right outcome.
 - **Unredeemed invite codes never expire** unless voided by revoke-all.
 - **Not yet run on Railway, and not yet run against a real upstream with a real
   key through the hosted path.** Every behaviour above is proven against the

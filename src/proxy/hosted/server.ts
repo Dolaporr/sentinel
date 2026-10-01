@@ -34,6 +34,7 @@ const MAX_ADMIN_BODY_BYTES = 64 * 1024;
 const MAX_INVITES_PER_CALL = 100;
 
 const usd = (value: number) => `$${value.toFixed(4)}`;
+const OPERATOR_FAULT_MIN_TOKENS = 2;
 
 export interface HostedServerConfig {
   port: number;
@@ -94,6 +95,13 @@ export class HostedGateway {
    * says nothing about the key, leaves it alone.
    */
   private operatorFaultStreak = 0;
+  /**
+   * Which tokens the current streak came from. A 402 can be caller-triggered
+   * when the operator's balance is below one allowed request's cost, so one
+   * caller repeating that request must not be able to pause everyone: the
+   * streak only pauses once it spans OPERATOR_FAULT_MIN_TOKENS distinct tokens.
+   */
+  private readonly operatorFaultTokens = new Set<string>();
 
   constructor(private readonly config: HostedServerConfig) {
     this.clock = config.clock ?? (() => new Date());
@@ -296,14 +304,14 @@ export class HostedGateway {
         },
         sink: {
           exact: async (costUsd, isStream) => {
-            this.operatorFaultStreak = 0;
+            this.resetOperatorFaults();
             await governor.commitExact(attemptId, costUsd);
             // Recorded whether or not the governor accepted it as on time:
             // the gateway billed it either way, and the pool must know.
             settle(costUsd, "exact", isStream);
           },
           estimated: async (reason, isStream, outputTokens) => {
-            if (!reason.startsWith("dispatch_failed") && reason !== "reservation_deadline_exceeded") this.operatorFaultStreak = 0;
+            if (!reason.startsWith("dispatch_failed") && reason !== "reservation_deadline_exceeded") this.resetOperatorFaults();
             const before = governor.snapshot().committedEstimated;
             const accepted = await governor.commitEstimated(attemptId, reason, outputTokens);
             const amount = accepted ? Math.max(0, governor.snapshot().committedEstimated - before) : reservation.amountUsd;
@@ -319,7 +327,7 @@ export class HostedGateway {
               attempt_id: attemptId, agent: handle, model, admitted: true, cost_usd: 0, cost_source: "not_billed",
               refusal_reason: null, worst_case_usd: reservation.amountUsd, budget_remaining_usd: this.tokenRemaining(handle), streaming: isStream
             });
-            this.noteOperatorFault(reason);
+            this.noteOperatorFault(reason, handle);
           }
         }
       });
@@ -330,13 +338,20 @@ export class HostedGateway {
     }
   }
 
-  private noteOperatorFault(reason: string): void {
+  private resetOperatorFaults(): void {
+    this.operatorFaultStreak = 0;
+    this.operatorFaultTokens.clear();
+  }
+
+  private noteOperatorFault(reason: string, handle: string): void {
     this.operatorFaultStreak++;
+    this.operatorFaultTokens.add(handle);
     const limit = this.store.config.operatorFaultPauseAfter;
-    console.error(`[OPERATOR] upstream rejected the operator's key (${reason}), ${this.operatorFaultStreak} in a row`);
-    if (this.operatorFaultStreak >= limit && !this.store.config.paused) {
+    const tokens = this.operatorFaultTokens.size;
+    console.error(`[OPERATOR] upstream rejected the operator's key (${reason}), ${this.operatorFaultStreak} in a row from ${tokens} token(s)`);
+    if (this.operatorFaultStreak >= limit && tokens >= OPERATOR_FAULT_MIN_TOKENS && !this.store.config.paused) {
       const status = reason.replace("upstream_status:", "HTTP ");
-      this.store.setPaused(true, `the upstream provider rejected the operator's key ${this.operatorFaultStreak} times in a row (last: ${status}).`);
+      this.store.setPaused(true, `the upstream provider rejected the operator's key ${this.operatorFaultStreak} times in a row, across ${tokens} different tokens (last: ${status}).`);
       console.error(`[OPERATOR] PAUSED automatically after ${this.operatorFaultStreak} consecutive operator-key failures. Fix the key, then POST /admin/resume.`);
     }
   }
@@ -450,7 +465,7 @@ export class HostedGateway {
     if (method === "POST" && (url === "/admin/pause" || url === "/admin/resume")) {
       const paused = url === "/admin/pause";
       this.store.setPaused(paused);
-      if (!paused) this.operatorFaultStreak = 0;
+      if (!paused) this.resetOperatorFaults();
       console.log(`[admin] ${paused ? "PAUSED - all user requests refused" : "resumed"}`);
       sendJson(res, 200, { paused });
       return;

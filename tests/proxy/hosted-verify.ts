@@ -333,18 +333,27 @@ async function endToEnd() {
   check("two faults in a row do not pause", !gw.store.config.paused && second.status === 503 && !/paused itself/.test(second.json.error.message));
   check("operator faults charge neither the token nor the pool", gw.tenants.spentTodayUsd(handleA) === spentAfterSuccess && gw.pool.committedUsd() === round(poolBefore + (spentAfterSuccess - spentBefore)));
   const third = await chat(tokA, { user: "operator-auth" });
-  check("the third in a row pauses the service", gw.store.config.paused === true);
-  check("the response that tripped it says so", /paused itself/.test(third.json.error.message), third.json?.error?.message);
+  await chat(tokA, { user: "operator-auth" });
+  await chat(tokA, { user: "operator-auth" });
+  check("one caller alone cannot pause the service, however many in a row", gw.store.config.paused === false && !/paused itself/.test(third.json.error.message));
+  const codeD = (await admin("/admin/invites", { count: 1 })).json.codes[0];
+  const tokD: string = (await call("/v1/redeem", { body: { code: codeD } })).json.token;
+  const tripping = await chat(tokD, { user: "operator-auth" });
+  check("a second token joining the streak pauses the service", gw.store.config.paused === true);
+  check("the response that tripped it says so", /paused itself/.test(tripping.json.error.message), tripping.json?.error?.message);
   const h3 = stubHits;
   const autoPaused = await chat(tokA);
-  check("while auto-paused: 503 that says why, and that it is not the caller's fault", autoPaused.status === 503 && autoPaused.json.error.code === "sentinel_paused" && /paused itself: the upstream provider rejected the operator's key 3 times in a row \(last: HTTP 401\)/.test(autoPaused.json.error.message) && /not yours/.test(autoPaused.json.error.message), autoPaused.json?.error?.message);
+  check("while auto-paused: 503 that says why, and that it is not the caller's fault", autoPaused.status === 503 && autoPaused.json.error.code === "sentinel_paused" && /paused itself: the upstream provider rejected the operator's key 6 times in a row, across 2 different tokens \(last: HTTP 401\)/.test(autoPaused.json.error.message) && /not yours/.test(autoPaused.json.error.message), autoPaused.json?.error?.message);
   check("nothing reached upstream while auto-paused", stubHits === h3);
-  check("healthz carries the reason", /3 times in a row/.test((await call("/healthz")).json.paused_reason ?? ""));
-  check("the public ledger carries the reason", /3 times in a row/.test((await call("/ledger.json")).json.hosted.pauseReason ?? ""));
+  check("healthz carries the reason", /across 2 different tokens/.test((await call("/healthz")).json.paused_reason ?? ""));
+  check("the public ledger carries the reason", /across 2 different tokens/.test((await call("/ledger.json")).json.hosted.pauseReason ?? ""));
   await admin("/admin/resume", {});
   check("resume clears the pause and its reason", !gw.store.config.paused && gw.store.pausedReason === null);
-  await chat(tokA, { user: "operator-auth" }); // straight after resume, no success in between
-  check("the streak restarted from zero on resume (one fault does not re-pause)", !gw.store.config.paused);
+  // Straight after resume, two different tokens, no success in between: a
+  // streak that survived the resume would already be past the threshold.
+  await chat(tokA, { user: "operator-auth" });
+  await chat(tokD, { user: "operator-auth" });
+  check("the streak restarted from zero on resume", !gw.store.config.paused);
   check("served again after resume", (await chat(tokA)).status === 200);
   check("operatorFaultPauseAfter is adjustable at runtime", (await admin("/admin/config", { operatorFaultPauseAfter: 5 }, "PATCH")).json.config.operatorFaultPauseAfter === 5);
 

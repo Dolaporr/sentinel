@@ -2,15 +2,15 @@
  * A per-call, agent-attributed record, written by the proxy alongside its
  * existing calls into BudgetGovernor -- not a replacement for it.
  *
- * The frozen governor ledger (src/governor/ledger.ts) cannot carry this: its
- * event shape is fixed by src/governor/types.ts, RESERVATION_CREATED carries
+ * The governor's own ledger (src/governor/ledger.ts) does not carry this: its
+ * event shape is the feed contract (contracts/feed.schema.json), RESERVATION_CREATED carries
  * `model` but COST_COMMITTED does not, refusal events never construct a
  * Reservation at all, and neither has any field for an agent label. Building
  * "by agent" and "by model" views by joining those events after the fact would
  * mean correlating several inconsistent shapes by attempt_id on every read.
  * This ledger instead records, once per resolved request, exactly the row the
  * views need -- computed from data src/proxy/server.ts already holds at each
- * decision point, not from anything new. src/governor/ itself is untouched.
+ * decision point, not from anything new.
  *
  * Metadata only, by construction: every field below is a model id, a token or
  * dollar count, a timestamp, a boolean, or a reason drawn from a fixed

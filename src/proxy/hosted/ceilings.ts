@@ -7,7 +7,7 @@
  * request holds its worst case against the pool until it settles, exactly as
  * the governor does per token.
  *
- * The per-token ceiling is the frozen BudgetGovernor, one instance per token,
+ * The per-token ceiling is the BudgetGovernor, one instance per token,
  * never shared. Finding 13: a shared governor turns one user's refusal or
  * accounting fault into everyone's quarantine.
  */

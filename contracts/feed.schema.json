@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://sentinel.orbio/contracts/feed.schema.json",
   "title": "Sentinel gateway feed event",
-  "description": "Append-only Sentinel feed. Day 1 gateway fields remain stable; Day 2 governor fields extend the feed for reservations and costs.",
+  "description": "Append-only Sentinel feed. Day 1 gateway fields remain stable; Day 2 governor fields extend the feed for reservations and costs. v1 is frozen for the recorded Build Week run (fixtures/sample-feed.jsonl); since then the schema is extended additively only: event RESERVATION_RELEASED and cost_source not_billed, for calls the provider refused before running them.",
   "type": "object",
   "additionalProperties": false,
   "required": ["ts", "seq", "event", "actor", "key_id", "orbio_balance", "orbio_spent", "key_state", "reason", "threshold", "raw"],
