@@ -19,6 +19,11 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   `feat/hosted` were merged to `main`, in that order (the first closes a live `n` /
   `max_completion_tokens` cap bypass); that authorisation covered those three merges only and
   the rule stands otherwise.
+  By scope-owner decision on 2026-10-01, `fix/hosted-lifecycle` and `feat/hosted-ops` were
+  merged to `main` in one pass, in that order. The IPv6 dual-stack listen path in
+  `fix/hosted-lifecycle` is untested (the build sandbox has IPv6 disabled; only the IPv4
+  fallback ran). That authorisation covered those two merges only and the rule stands
+  otherwise.
 - `src/governor/` was frozen for the Build Week submission. By scope-owner decision on
   2026-10-01 that freeze is lifted: Claude Code may change the governor and its ledger
   (first change: bounded retention of resolved reservations and in-memory events).
