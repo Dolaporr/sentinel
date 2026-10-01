@@ -10,6 +10,8 @@ OpenRouter are both wired in today, both governed by the same code path.
 
 **[→ Quickstart](QUICKSTART.md)** — run the local proxy in one command.
 
+**[→ Hosted](#hosted-service)** — or call an invite-only hosted instance with a token, and run nothing.
+
 Two agents. Same model, same mission, same $0.25 budget. One has an admission check in front of every call, the other doesn't.
 
 | Agent | Model | Calls | Spent | Remaining | Outcome |
@@ -106,11 +108,6 @@ The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
 not claimed until each has completed a real request through it.
 
-A **hosted** variant serves free governed inference on invite-issued tokens,
-with a shared daily pool and a per-token cap in front of the operator's key —
-the giveaway is only safe because of the governor. See
-[`docs/HOSTED.md`](docs/HOSTED.md).
-
 It also serves a **ledger page** at `GET /` — spend today against budget,
 broken down by agent and by model, every refusal with what it would have cost,
 the single most expensive call. Agent attribution reuses the client's bearer
@@ -119,6 +116,32 @@ at the proxy under five different names in the field they already have to
 fill in, and the split shows up without any new configuration. **The ledger
 stores metadata only — model, cost, timing, the agent label — never prompt or
 completion content.** Detail in [`docs/PROXY.md`](docs/PROXY.md#the-ledger).
+
+---
+
+## Hosted service
+
+The same governor, run as a service you call instead of a process you run. An
+operator holds the gateway key on the server; you get an `snt_` token from a
+one-time invite code and use it as an ordinary OpenAI-compatible API key:
+
+```bash
+curl -X POST https://<host>/v1/redeem -d '{"code": "SNT-XXXX-XXXX-XXXX-XXXX"}'
+# -> {"token": "snt_...", ...}   shown once; base URL https://<host>/v1
+```
+
+Every call is priced and admitted before it is sent, against a shared daily
+pool (checked first), the token's own daily cap, and optionally a lifetime
+allocation the operator sets per token. Only models on the operator's
+allowlist are served (cheap ones, by design — it is the anti-resale control). A public ledger at `https://<host>/` shows spend by anonymised token,
+by model, and every refusal with its reason — metadata only, never prompt or
+completion content. Giving inference away is only safe because of the
+governor; the ledger is that claim, live.
+
+Invite-only, and not yet verified on a live deployment — the offline suite
+(`npm run hosted:verify`) passes, and `npm run hosted:verify -- --url <host>`
+is the live check to run once one is up. Operators: deployment, admin routes
+and limitations are in [`docs/HOSTED.md`](docs/HOSTED.md).
 
 ---
 
@@ -143,6 +166,7 @@ Mint a key, run, **revoke it immediately**. Nothing in this repo revokes for you
 
 ```
 src/governor/        admission, reservations, TTL, exact vs estimated, quarantine
+src/proxy/           the local proxy; src/proxy/hosted/ is the hosted service
 src/orbio/           gateway client
 src/runner/          mission definition
 src/worker/          step loop, transport-injected
