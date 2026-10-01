@@ -9,7 +9,7 @@
 
 The local proxy is Claude Code's implementation lane by scope-owner decision on 2026-09-20.
 
-- **Codex must not edit `src/proxy/`.** Claude Code is building there on `feat/proxy`.
+- **Codex must not edit `src/proxy/` except for one additive change in `src/proxy/hosted/`: registering the game routes and constructing the game module in the hosted server's entry. Nothing else under `src/proxy/` may change.** Claude Code is building there on `feat/proxy`.
 - **Claude Code must not edit `src/governor/`.** The proxy consumes `BudgetGovernor` through its existing public API only.
 - Everything else under `src/` stays Codex's.
 

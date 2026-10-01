@@ -5,3 +5,4 @@ dist/
 evidence/*.jsonl
 !evidence/.gitkeep
 .cache/
+.game/
