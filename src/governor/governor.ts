@@ -7,7 +7,18 @@ export interface GovernorConfig {
   reservationSafetyMultiplier: number;
   maxStepBudgetFraction: number;
   prices: Readonly<Record<string, PriceEntry>>;
+  /**
+   * How long a resolved (committed or expired) attempt id is remembered.
+   * Within this window, reusing the id is refused as DUPLICATE_ATTEMPT, so a
+   * late result for the original can never land in a reused slot. After it,
+   * the id is forgotten -- a late result is still rejected and quarantines,
+   * because an unknown attempt id is rejected exactly like a resolved one.
+   * Default: the larger of 10 x reservationTtlMs and one hour.
+   */
+  resolvedRetentionMs?: number;
 }
+
+interface Resolved { reservation: Reservation; resolvedAtMs: number }
 
 const round = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
@@ -17,7 +28,16 @@ export class BudgetGovernor {
   private committedEstimated = 0;
   private reservedTotal = 0;
   private quarantined = false;
-  private readonly reservations = new Map<string, Reservation>();
+  // In flight only. Admission and expiry touch this map, so their cost is set
+  // by concurrency, not by how many calls the process has ever made.
+  private readonly active = new Map<string, Reservation>();
+  private readonly activeByLogicalCall = new Map<string, string>();
+  // Resolved, oldest first (Map keeps insertion order), pruned once past the
+  // retention window. Before this, every reservation was kept forever and
+  // every reserve() scanned all of them: harmless in a mission, a memory leak
+  // and an O(n^2) slowdown in a proxy that runs for weeks.
+  private readonly resolved = new Map<string, Resolved>();
+  private readonly retentionMs: number;
   private mutexTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly config: GovernorConfig, private readonly ledger: ReservationLedger) {
@@ -25,6 +45,8 @@ export class BudgetGovernor {
     if (config.reservationTtlMs <= 0) throw new Error("reservationTtlMs must be positive.");
     if (config.reservationSafetyMultiplier < 1) throw new Error("reservationSafetyMultiplier must be >= 1.");
     if (config.maxStepBudgetFraction <= 0 || config.maxStepBudgetFraction > 1) throw new Error("maxStepBudgetFraction must be in (0, 1].");
+    this.retentionMs = config.resolvedRetentionMs ?? Math.max(10 * config.reservationTtlMs, 3_600_000);
+    if (!(this.retentionMs > 0)) throw new Error("resolvedRetentionMs must be positive.");
   }
 
   async reserve(request: ReservationRequest): Promise<Admission> {
@@ -32,10 +54,8 @@ export class BudgetGovernor {
       const nowMs = request.nowMs ?? Date.now();
       this.expireUnlocked(nowMs);
       if (this.quarantined) return this.refuse("QUARANTINED", request, {});
-      if (this.reservations.has(request.attemptId)) return this.refuse("DUPLICATE_ATTEMPT", request, {});
-      if ([...this.reservations.values()].some((reservation) => reservation.logicalCallId === request.logicalCallId && reservation.state === "active")) {
-        return this.refuse("LOGICAL_CALL_IN_FLIGHT", request, {});
-      }
+      if (this.active.has(request.attemptId) || this.resolved.has(request.attemptId)) return this.refuse("DUPLICATE_ATTEMPT", request, {});
+      if (this.activeByLogicalCall.has(request.logicalCallId)) return this.refuse("LOGICAL_CALL_IN_FLIGHT", request, {});
       const price = this.config.prices[request.model];
       if (!price) return this.refuse("MODEL_UNPRICED", request, { model: request.model });
       const { baseWorstCase, amountUsd } = this.estimateWorstCase(request.model, request.inputTokens, request.maxTokens);
@@ -55,7 +75,8 @@ export class BudgetGovernor {
         state: "active",
         safetyMultiplier: this.config.reservationSafetyMultiplier
       };
-      this.reservations.set(reservation.attemptId, reservation);
+      this.active.set(reservation.attemptId, reservation);
+      this.activeByLogicalCall.set(reservation.logicalCallId, reservation.attemptId);
       this.reservedTotal = round(this.reservedTotal + amountUsd);
       this.record("RESERVATION_CREATED", reservation, amountUsd, null, {
         model: request.model,
@@ -74,9 +95,9 @@ export class BudgetGovernor {
   async commitExact(attemptId: string, costUsd: number, nowMs = Date.now()): Promise<boolean> {
     return this.atomic(async () => {
       this.expireUnlocked(nowMs);
-      const reservation = this.reservations.get(attemptId);
-      if (!reservation || reservation.state !== "active") return this.rejectLate(attemptId, costUsd, "exact_result_after_reservation_resolution");
-      this.closeReservation(reservation);
+      const reservation = this.active.get(attemptId);
+      if (!reservation) return this.rejectLate(attemptId, costUsd, "exact_result_after_reservation_resolution");
+      this.closeReservation(reservation, nowMs);
       this.committedExact = round(this.committedExact + costUsd);
       this.record("COST_COMMITTED", reservation, costUsd, "exact", { cost_source: "exact" });
       if (costUsd > reservation.amountUsd) {
@@ -94,12 +115,12 @@ export class BudgetGovernor {
   async commitEstimated(attemptId: string, reason: string, outputTokens?: number, nowMs = Date.now()): Promise<boolean> {
     return this.atomic(async () => {
       this.expireUnlocked(nowMs);
-      const reservation = this.reservations.get(attemptId);
-      if (!reservation || reservation.state !== "active") return this.rejectLate(attemptId, null, reason);
+      const reservation = this.active.get(attemptId);
+      if (!reservation) return this.rejectLate(attemptId, null, reason);
       const estimatedCost = outputTokens === undefined
         ? reservation.amountUsd
         : this.estimateObservedOutput(reservation, outputTokens);
-      this.closeReservation(reservation);
+      this.closeReservation(reservation, nowMs);
       this.committedEstimated = round(this.committedEstimated + estimatedCost);
       this.record("COST_COMMITTED", reservation, estimatedCost, "estimated", {
         cost_source: "estimated", reason, estimated_output_tokens: outputTokens ?? null,
@@ -132,40 +153,70 @@ export class BudgetGovernor {
         reason: input.reason,
         mission_completed: completed,
         completion_blocked_by_quarantine: input.completed && !completed,
-        active_reservations: [...this.reservations.values()].filter((reservation) => reservation.state === "active").length
+        active_reservations: this.active.size
       });
     });
   }
 
   snapshot(): GovernorSnapshot {
+    const active = this.active;
+    const resolved = this.resolved;
     return {
       committedExact: this.committedExact,
       committedEstimated: this.committedEstimated,
       reservedTotal: this.reservedTotal,
       budgetUsd: this.config.budgetUsd,
       quarantined: this.quarantined,
-      reservations: new Map(this.reservations)
+      activeReservations: active.size,
+      // Built only if read: the proxy takes several snapshots per request and
+      // almost never looks at individual reservations.
+      get reservations() {
+        const all = new Map<string, Reservation>();
+        for (const [id, entry] of resolved) all.set(id, entry.reservation);
+        for (const [id, reservation] of active) all.set(id, reservation);
+        return all;
+      }
     };
   }
 
   private expireUnlocked(nowMs: number): void {
-    for (const reservation of this.reservations.values()) {
-      if (reservation.state === "active" && reservation.expiresAtMs <= nowMs) {
+    for (const reservation of this.active.values()) {
+      if (reservation.expiresAtMs <= nowMs) {
         reservation.state = "expired";
         this.reservedTotal = round(this.reservedTotal - reservation.amountUsd);
+        this.retire(reservation, nowMs);
         this.record("RESERVATION_EXPIRED", reservation, reservation.amountUsd, null, { released_amount_usd: reservation.amountUsd, expired_at_ms: nowMs });
       }
     }
+    this.pruneResolved(nowMs);
   }
 
-  private closeReservation(reservation: Reservation): void {
+  private closeReservation(reservation: Reservation, nowMs: number): void {
     reservation.state = "committed";
     this.reservedTotal = round(this.reservedTotal - reservation.amountUsd);
+    this.retire(reservation, nowMs);
+  }
+
+  /** Active -> resolved. Deleting from a Map while iterating it is safe in JS. */
+  private retire(reservation: Reservation, nowMs: number): void {
+    this.active.delete(reservation.attemptId);
+    if (this.activeByLogicalCall.get(reservation.logicalCallId) === reservation.attemptId) {
+      this.activeByLogicalCall.delete(reservation.logicalCallId);
+    }
+    this.resolved.set(reservation.attemptId, { reservation, resolvedAtMs: nowMs });
+  }
+
+  /** Oldest first; stops at the first entry still inside the window. */
+  private pruneResolved(nowMs: number): void {
+    for (const [attemptId, entry] of this.resolved) {
+      if (entry.resolvedAtMs + this.retentionMs > nowMs) break;
+      this.resolved.delete(attemptId);
+    }
   }
 
   private rejectLate(attemptId: string, amount: number | null, reason: string): false {
     this.quarantined = true;
-    this.record("LATE_RESULT_REJECTED", this.reservations.get(attemptId) ?? null, amount, null, { attempt_id: attemptId, reason, admissions_quarantined: true });
+    this.record("LATE_RESULT_REJECTED", this.resolved.get(attemptId)?.reservation ?? null, amount, null, { attempt_id: attemptId, reason, admissions_quarantined: true });
     return false;
   }
 
