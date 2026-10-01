@@ -63,6 +63,9 @@ export interface GovernorSnapshot {
   reservedTotal: number;
   budgetUsd: number;
   quarantined: boolean;
+  /** Reservations still in flight. */
+  activeReservations: number;
+  /** In-flight reservations plus resolved ones still inside the retention window. Copied on access. */
   reservations: ReadonlyMap<string, Reservation>;
 }
 
