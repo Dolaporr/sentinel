@@ -6,12 +6,14 @@ import { GameRoundRunner } from "../../src/game/round-runner.js";
 import { GameEventStore } from "../../src/game/store.js";
 import type { GamePolicy, GameSeason } from "../../src/game/types.js";
 import { HostedStateStore, type HostedConfig } from "../../src/proxy/hosted/state.js";
+import { CallLedger } from "../../src/proxy/call-ledger.js";
 
 const root = mkdtempSync(join(tmpdir(), "sentinel-game-isolation-"));
 const config: HostedConfig = {
   poolDailyCapUsd: 5, tokenDailyCapUsd: 0.25, modelAllowlist: ["openai/gpt-4.1-mini"], requestsPerMinute: 20, paused: false, operatorFaultPauseAfter: 3
 };
 const hosted = new HostedStateStore(join(root, "hosted", "state.json"), config, () => new Date("2026-10-01T00:00:00.000Z"));
+const hostedCalls = new CallLedger(join(root, "hosted", "calls.jsonl"));
 const season: GameSeason = { id: "season-isolation", poolUsd: 0.10, perPlayerCeilingUsd: 0, prizePerWinUsd: 0, allowedModels: ["openai/gpt-4.1-mini"], active: true };
 const store = new GameEventStore(join(root, "game", "events.jsonl"));
 const runner = new GameRoundRunner(season, store, {
@@ -23,6 +25,7 @@ runner.fund(0.10);
 await runner.run("game-player", policy);
 assert.equal(store.snapshot(season).remainingUsd, 0.06, "a game round consumes the game season pool");
 assert.equal(hosted.today().poolCommittedUsd, 0, "a drained game pool never debits the hosted free-tier pool");
+assert.equal(hostedCalls.readToday(new Date("2026-10-01T00:00:00.000Z")).length, 0, "a game round never writes the hosted call ledger");
 
 const gameRemainingBeforeFreeTierSpend = store.snapshot(season).remainingUsd;
 hosted.recordSpend("free-tier-token", 4.99);

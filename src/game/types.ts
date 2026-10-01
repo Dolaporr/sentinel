@@ -60,7 +60,13 @@ export interface GameExecutionResult {
 }
 
 export interface GameTransport {
-  execute(input: { runId: string; seasonId: string; policy: GamePolicy }): Promise<GameExecutionResult>;
+  execute(input: {
+    runId: string;
+    seasonId: string;
+    policy: GamePolicy;
+    reservedUsd: number;
+    inputTokens: number;
+  }): Promise<GameExecutionResult>;
 }
 
 export interface HostedAllocationState {

@@ -39,7 +39,7 @@ export class GameRoundRunner {
     }));
 
     let result;
-    try { result = await this.transport.execute({ runId, seasonId: this.season.id, policy }); }
+    try { result = await this.transport.execute({ runId, seasonId: this.season.id, policy, reservedUsd: quoteUsd, inputTokens: 0 }); }
     catch (error) {
       this.store.append(gameEvent("GAME_COST_NOT_BILLED", {
         seasonId: this.season.id, runId, playerId, amountUsd: null, reason: "upstream_error", policyHash: hash,
