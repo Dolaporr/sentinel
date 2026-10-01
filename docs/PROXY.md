@@ -60,7 +60,12 @@ The API key the client sends is ignored, so anything non-empty works.
    over-counts, because it feeds a worst-case bound.
 3. **Injects `max_tokens`** when the client sends none, and forwards it. A
    request with no ceiling has an unbounded worst case, which would make its
-   reservation meaningless.
+   reservation meaningless. There is exactly one output ceiling: a
+   `max_completion_tokens` (OpenAI's newer name) is folded into it — the lower
+   value wins when both are sent — and only `max_tokens` goes upstream, so a
+   gateway cannot honour a larger ceiling than the one reserved. A request with
+   `n` other than 1 is refused with 400: n completions against a reservation
+   for one was an n-fold cap bypass (fixed 2026-10-01).
 4. **Reserves** the worst case × the safety multiplier. If the governor refuses,
    the client gets **HTTP 402** with the numbers in `error.message`, which is
    what Cursor and Codex surface to the user.

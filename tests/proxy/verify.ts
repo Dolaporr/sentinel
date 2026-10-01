@@ -469,6 +469,37 @@ async function run() {
   check("an unknown route still 404s and now names both served routes", otherRes.status === 404 && otherBody.error.message.includes("/v1/models"));
   server.close(); stub.close();
 
+  // --- 12. one output ceiling, and it is the one reserved --------------------
+  console.log("\n12. n and max_completion_tokens cannot spend past the reservation");
+  stub = startStub();
+  proxy = makeProxy(9923);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  const post9923 = (body: unknown) => fetch("http://127.0.0.1:9923/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+  lastUpstreamBody = { untouched: true };
+  const nRes = await post9923({ model: CHEAP_MODEL, messages, max_tokens: 64, n: 5 });
+  const nBody = await nRes.json() as { error: { param: string; message: string } };
+  check("n: 5 is refused with 400 naming the field", nRes.status === 400 && nBody.error.param === "n", `got ${nRes.status}`);
+  check("n: 5 never reached upstream", lastUpstreamBody.untouched === true);
+  check("n: 5 reserved nothing", proxy.snapshot().reservedTotal === 0 && proxy.snapshot().committedExact === 0);
+
+  const n1 = await post9923({ model: CHEAP_MODEL, messages, max_tokens: 64, n: 1 });
+  await n1.text();
+  check("n: 1 is served", n1.status === 200);
+  check("n is not forwarded upstream", !("n" in lastUpstreamBody));
+
+  const mct = await post9923({ model: CHEAP_MODEL, messages, max_completion_tokens: 5000 });
+  await mct.text();
+  check("max_completion_tokens alone becomes the reserved ceiling", mct.headers.get("x-sentinel-max-tokens") === "5000", String(mct.headers.get("x-sentinel-max-tokens")));
+  check("not the injected default", mct.headers.get("x-sentinel-max-tokens-injected") === "false");
+  check("only max_tokens goes upstream, at that ceiling", lastUpstreamBody.max_tokens === 5000 && !("max_completion_tokens" in lastUpstreamBody), JSON.stringify(lastUpstreamBody.max_tokens));
+
+  const both = await post9923({ model: CHEAP_MODEL, messages, max_tokens: 300, max_completion_tokens: 64 });
+  await both.text();
+  check("both set: the lower one is reserved and forwarded", both.headers.get("x-sentinel-max-tokens") === "64" && lastUpstreamBody.max_tokens === 64 && !("max_completion_tokens" in lastUpstreamBody));
+  server.close(); stub.close();
+
   // --- proxy/runner constant drift ------------------------------------------
   console.log("");
   console.log("shared constants still match src/runner/d2-mission.ts");
