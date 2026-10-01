@@ -2,15 +2,15 @@
  * A per-call, agent-attributed record, written by the proxy alongside its
  * existing calls into BudgetGovernor -- not a replacement for it.
  *
- * The frozen governor ledger (src/governor/ledger.ts) cannot carry this: its
- * event shape is fixed by src/governor/types.ts, RESERVATION_CREATED carries
+ * The governor's own ledger (src/governor/ledger.ts) does not carry this: its
+ * event shape is the feed contract (contracts/feed.schema.json), RESERVATION_CREATED carries
  * `model` but COST_COMMITTED does not, refusal events never construct a
  * Reservation at all, and neither has any field for an agent label. Building
  * "by agent" and "by model" views by joining those events after the fact would
  * mean correlating several inconsistent shapes by attempt_id on every read.
  * This ledger instead records, once per resolved request, exactly the row the
  * views need -- computed from data src/proxy/server.ts already holds at each
- * decision point, not from anything new. src/governor/ itself is untouched.
+ * decision point, not from anything new.
  *
  * Metadata only, by construction: every field below is a model id, a token or
  * dollar count, a timestamp, a boolean, or a reason drawn from a fixed
@@ -29,7 +29,8 @@ export interface CallLedgerEntry {
   admitted: boolean;
   /** Set only when admitted and settled; null for a refusal or a still-open call. */
   cost_usd: number | null;
-  cost_source: "exact" | "estimated" | null;
+  /** not_billed: admitted, but the provider refused before running it (cost_usd 0). */
+  cost_source: "exact" | "estimated" | "not_billed" | null;
   /** Set only when !admitted. AdmissionRefusalReason, or a proxy-level refusal code. */
   refusal_reason: string | null;
   /** The worst case reserved (admitted) or that would have been reserved (refused). Null when unpriced. */
@@ -70,8 +71,8 @@ export class CallLedger {
    * A missing or corrupt file reads as no history, not an error: a fresh
    * install has nothing to show yet, and one bad line does not lose the rest.
    */
-  readToday(now: Date = new Date()): CallLedgerEntry[] {
-    const today = localDateKey(now);
+  readToday(now: Date = new Date(), dateKeyOf: (d: Date) => string = localDateKey): CallLedgerEntry[] {
+    const today = dateKeyOf(now);
     let raw: string;
     try {
       raw = readFileSync(this.filePath, "utf8");
@@ -83,7 +84,7 @@ export class CallLedger {
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line) as CallLedgerEntry;
-        if (typeof parsed.ts === "string" && localDateKey(new Date(parsed.ts)) === today) entries.push(parsed);
+        if (typeof parsed.ts === "string" && dateKeyOf(new Date(parsed.ts)) === today) entries.push(parsed);
       } catch {
         /* one corrupt line does not lose the rest of the day */
       }
@@ -99,6 +100,8 @@ export interface TodaySummary {
   estimatedUsd: number;
   callsMade: number;
   callsRefused: number;
+  /** Admitted, but the provider refused before running them: no spend, not "calls made". */
+  callsNotBilled: number;
 }
 
 /** Only settled (admitted, cost known) calls count toward "calls made" and spend here. */
@@ -107,14 +110,16 @@ export function summarizeToday(entries: readonly CallLedgerEntry[], budgetUsd: n
   let estimatedUsd = 0;
   let callsMade = 0;
   let callsRefused = 0;
+  let callsNotBilled = 0;
   for (const entry of entries) {
     if (!entry.admitted) { callsRefused++; continue; }
+    if (entry.cost_source === "not_billed") { callsNotBilled++; continue; }
     if (entry.cost_usd === null) continue; // admitted but not yet settled
     callsMade++;
     if (entry.cost_source === "exact") exactUsd = round(exactUsd + entry.cost_usd);
     else estimatedUsd = round(estimatedUsd + entry.cost_usd);
   }
-  return { spentUsd: round(exactUsd + estimatedUsd), budgetUsd, exactUsd, estimatedUsd, callsMade, callsRefused };
+  return { spentUsd: round(exactUsd + estimatedUsd), budgetUsd, exactUsd, estimatedUsd, callsMade, callsRefused, callsNotBilled };
 }
 
 export interface BreakdownRow {
@@ -130,7 +135,7 @@ function aggregateBy(entries: readonly CallLedgerEntry[], keyOf: (entry: CallLed
   const totals = new Map<string, { calls: number; spendUsd: number }>();
   let grandTotal = 0;
   for (const entry of entries) {
-    if (!entry.admitted || entry.cost_usd === null) continue;
+    if (!entry.admitted || entry.cost_usd === null || entry.cost_source === "not_billed") continue;
     const key = keyOf(entry);
     const row = totals.get(key) ?? { calls: 0, spendUsd: 0 };
     row.calls += 1;
@@ -189,7 +194,7 @@ export interface MostExpensiveCall {
 export function mostExpensiveCall(entries: readonly CallLedgerEntry[]): MostExpensiveCall | null {
   let best: MostExpensiveCall | null = null;
   for (const entry of entries) {
-    if (!entry.admitted || entry.cost_usd === null) continue;
+    if (!entry.admitted || entry.cost_usd === null || entry.cost_source === "not_billed") continue;
     if (!best || entry.cost_usd > best.costUsd) {
       best = { ts: entry.ts, agent: entry.agent, model: entry.model, costUsd: entry.cost_usd };
     }
@@ -202,7 +207,7 @@ export interface SparklinePoint { ts: string; cumulativeUsd: number }
 /** Cumulative spend over the day, in call order -- the one chart §4 allows. */
 export function spendSparkline(entries: readonly CallLedgerEntry[]): SparklinePoint[] {
   const settled = entries
-    .filter((entry) => entry.admitted && entry.cost_usd !== null)
+    .filter((entry) => entry.admitted && entry.cost_usd !== null && entry.cost_source !== "not_billed")
     .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   let running = 0;
   return settled.map((entry) => {
@@ -222,6 +227,18 @@ export interface LedgerViewModel {
   sparkline: SparklinePoint[];
   /** Drives the empty state: a fresh install with no traffic explains itself. */
   hasAnyTraffic: boolean;
+  /** Present only on the hosted service: the page relabels itself and shows the shared pool. */
+  hosted?: {
+    poolCapUsd: number;
+    poolCommittedUsd: number;
+    poolRemainingUsd: number;
+    tokenDailyCapUsd: number;
+    models: string[];
+    resetsAt: string;
+    paused: boolean;
+    /** Set when the service paused itself rather than being paused by the operator. */
+    pauseReason?: string | null;
+  };
 }
 
 /**
@@ -230,10 +247,10 @@ export interface LedgerViewModel {
  * it, so the logic worth getting right lives here where it can be tested,
  * not duplicated in client-side JS.
  */
-export function buildLedgerViewModel(entries: readonly CallLedgerEntry[], budgetUsd: number, now: Date = new Date()): LedgerViewModel {
+export function buildLedgerViewModel(entries: readonly CallLedgerEntry[], budgetUsd: number, now: Date = new Date(), dateKeyOf: (d: Date) => string = localDateKey): LedgerViewModel {
   return {
     generatedAt: now.toISOString(),
-    date: localDateKey(now),
+    date: dateKeyOf(now),
     today: summarizeToday(entries, budgetUsd),
     byAgent: aggregateByAgent(entries),
     byModel: aggregateByModel(entries),

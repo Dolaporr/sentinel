@@ -7,6 +7,7 @@
  * exercised for real even though the money is not.
  */
 import { createServer, type Server } from "node:http";
+import { rmSync } from "node:fs";
 import { prices, CHEAP_MODEL, RESERVATION_SAFETY_MULTIPLIER } from "../../src/runner/d2-mission.js";
 // The proxy deliberately keeps its own copy of these so it never imports the
 // mission runner, whose corpus is read from process.cwd() at load time. This
@@ -37,7 +38,7 @@ const check = (name: string, ok: boolean, detail = "") => {
 // with an `index` field), which is what a real gateway actually does -- a
 // single-delta reply would under-test whether the proxy buffers or reshapes
 // streamed tool-call argument fragments instead of passing them through raw.
-interface StubOptions { cut?: boolean; omitUsage?: boolean; toolCalls?: boolean }
+interface StubOptions { cut?: boolean; omitUsage?: boolean; toolCalls?: boolean; upstreamStatus?: number }
 let lastUpstreamBody: Record<string, unknown> = {};
 
 function startStub(options: StubOptions = {}): Server {
@@ -46,6 +47,11 @@ function startStub(options: StubOptions = {}): Server {
     req.on("data", (c) => { raw += c; });
     req.on("end", () => {
       lastUpstreamBody = JSON.parse(raw || "{}");
+      if (options.upstreamStatus) {
+        res.writeHead(options.upstreamStatus, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: options.upstreamStatus, message: "stub upstream refusal" } }));
+        return;
+      }
       const streaming = lastUpstreamBody.stream === true;
       // A `:free` model really does bill zero; anything else carries a cost.
       const cost = String(lastUpstreamBody.model ?? "").endsWith(":free") ? 0 : 0.000123;
@@ -498,6 +504,34 @@ async function run() {
   const both = await post9923({ model: CHEAP_MODEL, messages, max_tokens: 300, max_completion_tokens: 64 });
   await both.text();
   check("both set: the lower one is reserved and forwarded", both.headers.get("x-sentinel-max-tokens") === "64" && lastUpstreamBody.max_tokens === 64 && !("max_completion_tokens" in lastUpstreamBody));
+  server.close(); stub.close();
+
+  // --- 13. upstream 401/402: nothing ran, so nothing is charged --------------
+  console.log("\n13. upstream 401/402 settle as not_billed at $0, not as an estimate");
+  for (const [port, status] of [[9924, 401], [9925, 402]] as const) {
+    rmSync(`/tmp/sentinel-verify-calls-${port}.jsonl`, { force: true }); // counted below; start clean
+    stub = startStub({ upstreamStatus: status });
+    proxy = makeProxy(port);
+    server = proxy.listen();
+    await new Promise((r) => setTimeout(r, 150));
+    const rejected = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: CHEAP_MODEL, messages, max_tokens: 64 }) });
+    const rejectedText = await rejected.text();
+    const snap = proxy.snapshot();
+    check(`${status}: upstream status passed through`, rejected.status === status && rejectedText.includes("stub upstream refusal"));
+    check(`${status}: cost source header is not_billed`, rejected.headers.get("x-sentinel-cost-source") === "not_billed" && rejected.headers.get("x-sentinel-cost-usd") === "0");
+    check(`${status}: nothing committed, exact or estimated`, snap.committedExact === 0 && snap.committedEstimated === 0, JSON.stringify({ e: snap.committedExact, s: snap.committedEstimated }));
+    check(`${status}: the reservation is released`, snap.reservedTotal === 0 && snap.activeReservations === 0);
+    check(`${status}: not quarantined`, !snap.quarantined);
+    const view = await (await fetch(`http://127.0.0.1:${port}/ledger.json`)).json() as { today: { callsMade: number; callsNotBilled: number; spentUsd: number } };
+    check(`${status}: ledger counts it as not billed, not as a call made`, view.today.callsNotBilled === 1 && view.today.callsMade === 0 && view.today.spentUsd === 0, JSON.stringify(view.today));
+    server.close(); stub.close();
+  }
+  stub = startStub({ upstreamStatus: 500 });
+  proxy = makeProxy(9926);
+  server = proxy.listen();
+  await new Promise((r) => setTimeout(r, 150));
+  await (await fetch("http://127.0.0.1:9926/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ model: CHEAP_MODEL, messages, max_tokens: 64 }) })).text();
+  check("500: still settled as an estimate -- Sentinel cannot see whether it billed", proxy.snapshot().committedEstimated > 0);
   server.close(); stub.close();
 
   // --- proxy/runner constant drift ------------------------------------------

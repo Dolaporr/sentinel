@@ -1,4 +1,10 @@
-export type CostSource = "exact" | "estimated";
+/**
+ * exact: the provider reported what it billed. estimated: Sentinel computed it.
+ * not_billed: the provider refused before any inference ran (rejected or
+ * unfunded credentials), so nothing was billed -- $0, but inferred from the
+ * refusal rather than reported, which is why it is neither of the other two.
+ */
+export type CostSource = "exact" | "estimated" | "not_billed";
 
 export interface PriceEntry {
   inputPerMillionUsd: number;
@@ -15,7 +21,7 @@ export interface ReservationRequest {
   nowMs?: number;
 }
 
-export type ReservationState = "active" | "expired" | "committed";
+export type ReservationState = "active" | "expired" | "committed" | "released";
 
 export interface Reservation {
   attemptId: string;
@@ -35,6 +41,7 @@ export type GovernorEventName =
   | "RESERVATION_CREATED"
   | "RESERVATION_EXPIRED"
   | "COST_COMMITTED"
+  | "RESERVATION_RELEASED"
   | "MODEL_REFUSED"
   | "BUDGET_REFUSED"
   | "OVER_RESERVATION"

@@ -27,6 +27,8 @@
     "proxy:verify": "tsx tests/proxy/verify.ts",
     "proxy:verify:live": "tsx tests/proxy/live-verify.ts",
     "proxy:verify:ledger": "tsx tests/proxy/ledger-verify.ts",
+    "hosted": "node bin/sentinel-hosted.mjs",
+    "hosted:verify": "tsx tests/proxy/hosted-verify.ts",
     "demo:call": "tsx scripts/demo-call.ts",
     "proxy:cli": "node bin/sentinel-proxy.mjs"
   },

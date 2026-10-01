@@ -106,6 +106,11 @@ The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
 not claimed until each has completed a real request through it.
 
+A **hosted** variant serves free governed inference on invite-issued tokens,
+with a shared daily pool and a per-token cap in front of the operator's key —
+the giveaway is only safe because of the governor. See
+[`docs/HOSTED.md`](docs/HOSTED.md).
+
 It also serves a **ledger page** at `GET /` — spend today against budget,
 broken down by agent and by model, every refusal with what it would have cost,
 the single most expensive call. Agent attribution reuses the client's bearer
@@ -142,12 +147,20 @@ src/orbio/           gateway client
 src/runner/          mission definition
 src/worker/          step loop, transport-injected
 src/ledger/          append-only JSONL
-contracts/           feed.schema.json — frozen event shape
+contracts/           feed.schema.json — event shape: v1 frozen for the recorded run, extended additively since
 fixtures/            corpus/ and the recorded live run
 tests/adversarial/   14 findings with runnable reproductions
 docs/                MCP_SURFACE, DAY1_RESULT, DAY1_FAILURE_MODES, LIMITATIONS
 sentinel-ui/         replay viewer for the recorded feed
 ```
+
+The feed contract was frozen at v1 for the recorded Build Week run, and that
+version still stands for it. Since then `contracts/feed.schema.json` has been
+extended additively only — one event (`RESERVATION_RELEASED`) and one
+`cost_source` value (`not_billed`), for calls the provider refused before
+running them. `fixtures/sample-feed.jsonl` is unchanged and still validates:
+all 139 events pass a JSON Schema (draft 2020-12) validator against both v1
+and the current schema.
 
 ## Notes on the Orbio gateway
 

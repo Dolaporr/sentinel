@@ -96,11 +96,19 @@ model fails closed at admission — never a silent default.
 formatting choice.** A provider either reports what it actually billed
 (`usage.cost` on the response, in Orbio's case) or it does not. When it does
 not, Sentinel commits an honest estimate computed from that provider's own
-price table and the frozen governor's existing reservation math — the same
+price table and the governor's existing reservation math — the same
 machinery that already handles a cut stream or a missing `usage` field, reused
 rather than duplicated. **`exact` is never returned for a number Sentinel
 calculated itself.** The banner and `/healthz` (`cost_reporting`) say plainly,
 per provider, which one you are looking at.
+
+A third label exists for one case only: **`not_billed`**, at $0, when the
+provider answers 401 or 402 — credentials rejected or unfunded, refused before
+any inference ran. It is not `exact` (no provider reported $0; Sentinel inferred
+it from the refusal) and not `estimated` (an estimate for a call that never ran
+would be wrong, not conservative). It commits nothing to today's total, appears
+as `x-sentinel-cost-source: not_billed`, and the ledger page counts it apart from
+calls made. Every other upstream error is still settled as an estimate.
 
 Only one provider runs per proxy instance. There is no cross-provider
 model-prefix routing in a single process — if you need two providers at once,
@@ -285,7 +293,7 @@ missing from.
 
 ### Why a second ledger file
 
-`SENTINEL_PROXY_LEDGER` below (unset by default) is the frozen governor's own
+`SENTINEL_PROXY_LEDGER` below (unset by default) is the governor's own
 event journal — `src/governor/`'s shape, untouched. It has no field for an
 agent label, and cost commits don't even carry the model id, so building "by
 agent" or "by model" from it would mean joining several inconsistent event
@@ -298,7 +306,7 @@ is "here is what happened" needs something to read without an env var nobody
 sets.
 
 **Found while building this:** `SENTINEL_PROXY_LEDGER` has no default and is
-unset out of the box, so the governor's own frozen event journal is not
+unset out of the box, so the governor's own event journal is not
 currently durable across a restart unless someone sets that variable
 themselves — a pre-existing gap, not something this feature introduced or
 fixed. Left as-is here rather than silently changed, since it is a decision
@@ -319,7 +327,7 @@ about an already-shipped default, not about attribution or the view.
 | `SENTINEL_PROXY_RESERVATION_TTL_MS` | `120000` | a dispatch is aborted at its reservation deadline |
 | `SENTINEL_PROXY_SPEND` | `.cache/spend.json` | the durable daily total |
 | `SENTINEL_PROXY_PRICE_CACHE` | `.cache/price-table.json` | last known good price table |
-| `SENTINEL_PROXY_LEDGER` | unset | append the frozen governor's own events to this JSONL path |
+| `SENTINEL_PROXY_LEDGER` | unset | append the governor's own events to this JSONL path |
 | `SENTINEL_PROXY_CALL_LEDGER` | `.cache/calls.jsonl` | per-call, agent-attributed rows the ledger page reads — see "Why a second ledger file" above |
 
 `npm run proxy:verify` exercises the route, streaming, cut streams, the price
@@ -418,7 +426,7 @@ that string appears nowhere in either.
 - **Attribution is a label, not identity.** Anyone on the loopback can claim any
   agent name; two agents both sending the same bearer token are indistinguishable
   in the ledger. Per-agent budgets are out of scope — see "The ledger" above.
-- **`SENTINEL_PROXY_LEDGER` (the frozen governor's own event journal, distinct
+- **`SENTINEL_PROXY_LEDGER` (the governor's own event journal, distinct
   from the ledger page's `SENTINEL_PROXY_CALL_LEDGER`) has no default and is
   unset out of the box**, so it is not durable across a restart unless set
   explicitly. Pre-existing, found while building the ledger page, left

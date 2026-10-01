@@ -55,7 +55,7 @@ export interface ProxyConfig {
    * unlike ledgerPath above: a page whose entire point is showing what
    * happened needs something to read out of the box, not an env var nobody
    * sets. See src/proxy/call-ledger.ts for why this is a separate file from
-   * the frozen governor ledger rather than a reader built on top of it.
+   * the governor's own ledger rather than a reader built on top of it.
    */
   callLedgerPath: string;
   /** Where the live price table is fetched from at startup, or null if this provider has none. */
