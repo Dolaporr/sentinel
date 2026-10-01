@@ -138,9 +138,11 @@ by model, and every refusal with its reason — metadata only, never prompt or
 completion content. Giving inference away is only safe because of the
 governor; the ledger is that claim, live.
 
-Invite-only. Deployed on Railway and answering as of 2026-10-01, but the live
-end-to-end check (`npm run hosted:verify -- --url <host>`, one real call) has
-not been run against it yet; the offline suite (`npm run hosted:verify`) passes. Operators: deployment, admin routes
+Invite-only. Deployed on Railway since 2026-10-01. The live end-to-end check
+(`npm run hosted:verify -- --url <host>`) passed against it — one real call,
+$0.000009 billed and committed as exact, the cap refusal, pause and resume — and
+tokens, revocations and spend survived a redeploy. The offline suite
+(`npm run hosted:verify`) passes too. Operators: deployment, admin routes
 and limitations are in [`docs/HOSTED.md`](docs/HOSTED.md).
 
 ---

@@ -256,11 +256,15 @@ Without `--url`, `npm run hosted:verify` is the offline suite against a stub.
   request's cost. One cannot (see the two-token rule above). At that balance
   normal traffic is failing anyway, so the pause is the right outcome.
 - **Unredeemed invite codes never expire** unless voided by revoke-all.
-- **Running on Railway since 2026-10-01, but not yet run against a real
-  upstream with a real key through the hosted path.** The deployment boots
-  dual-stack and answers `/healthz` (GET and HEAD), `/v1/models` and `/`
-  through its public domain. Every other behaviour above is proven against the
-  stub; the live smoke test (`hosted:verify --url`), which makes the one real
-  call, has not been run against it yet. §7's done-bar — a real agent, a real
-  cheap call, a refusal, the kill switch — is for someone other than its
-  author to run.
+- **Verified live on Railway, 2026-10-01 — but by its author, not by someone
+  else.** The deployment boots dual-stack and answers `/healthz` (GET and
+  HEAD), `/v1/models` and `/` through its public domain. The live smoke test
+  (`hosted:verify --url`) passed every step against it: invite, redeem, one
+  real call ($0.000009, exact, inside its $0.000041 reservation), ledger
+  moved, a call past the token's cap refused before dispatch, pause, refusal
+  while paused, resume. A redeploy then showed the volume holds: after a
+  confirmed restart the test token, its revocation, its lifetime and daily
+  spend, the invite count and the pool total were all unchanged. The rest of
+  this document's behaviour is proven against the stub. §7's done-bar — run
+  by someone who isn't its author, with a real agent — is still open: the
+  smoke test was run by Claude Code, which wrote it.
