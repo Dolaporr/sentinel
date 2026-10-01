@@ -49,8 +49,16 @@ as its API key.
    Finding 13 is why: a shared governor turns one user's accounting fault into
    everyone's quarantine. Verified in `hosted:verify` — a token quarantined by an
    over-billed call leaves every other token serving.
+3. **Per-token lifetime allocation (optional).** "This token has $20 of
+   inference", set by the operator, per token. It never resets, and the daily
+   cap still applies on top: the token's governor budget is whichever is
+   smaller, what is left of today's cap or what is left of the allocation, so
+   both are enforced by reservation like everything else — two concurrent calls
+   that fit the allocation only once cannot both be admitted (tested). A
+   refusal says which limit bound: waiting for midnight does not help a token
+   whose allocation ran out. Tokens without one have only the daily cap.
 
-Both reset at **00:00 UTC** (not local time: the users are everywhere). Both,
+The two daily ceilings reset at **00:00 UTC** (not local time: the users are everywhere). Both,
 plus the allowlist and rate limit, are changed at runtime with
 `PATCH /admin/config` — no redeploy. Environment variables only seed the state
 file on first boot; after that the stored values win, and startup warns if the
@@ -183,6 +191,8 @@ First-boot seeds (optional): `SENTINEL_HOSTED_POOL_DAILY_USD` (5),
 A="Authorization: Bearer $SENTINEL_HOSTED_ADMIN_TOKEN"; H=https://<host>
 
 curl -X POST $H/admin/invites -H "$A" -d '{"count": 5}'      # codes, shown once
+curl -X POST $H/admin/invites -H "$A" -d '{"count": 1, "lifetimeAllocationUsd": 20}'   # a code worth $20 in total
+curl -X PATCH $H/admin/tokens/t-3f2a9c -H "$A" -d '{"lifetimeAllocationUsd": 20}'      # set or change one token's total; null removes it
 curl $H/admin/tokens -H "$A"                                  # handles, spend, status
 curl -X POST $H/admin/tokens/t-3f2a9c/revoke -H "$A"          # kill one
 curl -X POST $H/admin/pause -H "$A"                           # kill switch
@@ -197,6 +207,35 @@ A user redeems with:
 ```bash
 curl -X POST $H/v1/redeem -d '{"code": "SNT-XXXX-XXXX-XXXX-XXXX"}'
 ```
+
+## Smoke test against a deployment
+
+```bash
+SENTINEL_HOSTED_ADMIN_TOKEN=... npm run hosted:verify -- --url https://<host>
+# or: npm run hosted:verify -- --url https://<host> --admin <token>
+```
+
+Runs the §7 sequence against the live service and prints PASS/FAIL per step:
+issue an invite, redeem it, **one real call** on an allowlisted model, the
+ledger moved, a second call past the token's cap refused before dispatch,
+pause, a call refused while paused, resume.
+
+- **It tells you what it will spend first.** Before anything is spent it prints
+  the worst case Sentinel will reserve for the one real call — computed with the
+  server's own pricing and token-estimation functions, and checked afterwards
+  against what the server actually reserved — and stops unless you confirm.
+  Off a terminal it needs `--yes`. `--max-spend` (default $0.01) refuses runs
+  whose bound is higher.
+- **Safe to re-run.** It never calls revoke-all. The cap test narrows only the
+  token it minted (through that token's lifetime allocation), never the shared
+  caps. At the end it revokes only its own token and resumes only a pause it
+  caused. It will not start against a service that is already paused, because
+  resuming at the end would undo the operator's pause.
+- **It does pause the whole service for about a second**, so every user is
+  refused during that window.
+- No secret — admin token, invite code, user token — is ever printed.
+
+Without `--url`, `npm run hosted:verify` is the offline suite against a stub.
 
 ## Limitations
 

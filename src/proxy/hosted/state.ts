@@ -47,6 +47,8 @@ export interface InviteRecord {
   handle: string | null;
   /** Set by revoke-all on codes nobody had redeemed yet. */
   voidedAt?: string | null;
+  /** Carried to the token this code produces. Absent: no lifetime limit, only the daily cap. */
+  lifetimeAllocationUsd?: number | null;
 }
 
 export interface TokenRecord {
@@ -54,6 +56,18 @@ export interface TokenRecord {
   handle: string;
   createdAt: string;
   revokedAt: string | null;
+  /**
+   * Total this token may ever spend, on top of (not instead of) the daily cap.
+   * Null or absent: no lifetime limit. Set by the operator, per token.
+   */
+  lifetimeAllocationUsd?: number | null;
+  /** Everything this token has spent since it was issued. Absent reads as 0. */
+  lifetimeSpentUsd?: number;
+}
+
+/** null clears the allocation; otherwise a finite, non-negative dollar amount. */
+export function validAllocation(value: unknown): value is number | null {
+  return value === null || (typeof value === "number" && Number.isFinite(value) && value >= 0);
 }
 
 export interface SpendDay {
@@ -141,12 +155,22 @@ export class HostedStateStore {
     return this.state.spend;
   }
 
-  /** One commit lands in both the pool total and the token's own total, in one write. */
+  /** One commit lands in the pool, the token's day and the token's lifetime total, in one write. */
   recordSpend(handle: string, costUsd: number): void {
     const day = this.today() as SpendDay;
     day.poolCommittedUsd = round(day.poolCommittedUsd + costUsd);
     day.byHandle[handle] = round((day.byHandle[handle] ?? 0) + costUsd);
+    const token = this.findTokenByHandle(handle);
+    if (token) token.lifetimeSpentUsd = round((token.lifetimeSpentUsd ?? 0) + costUsd);
     this.save();
+  }
+
+  setLifetimeAllocation(handle: string, allocationUsd: number | null): TokenRecord | undefined {
+    const token = this.findTokenByHandle(handle);
+    if (!token) return undefined;
+    token.lifetimeAllocationUsd = allocationUsd === null ? null : round(allocationUsd);
+    this.save();
+    return token;
   }
 
   tokens(): readonly TokenRecord[] { return this.state.tokens; }
@@ -160,9 +184,9 @@ export class HostedStateStore {
     return this.state.tokens.find((t) => t.handle === handle);
   }
 
-  addInvites(codeHashes: string[]): void {
+  addInvites(codeHashes: string[], lifetimeAllocationUsd: number | null = null): void {
     const createdAt = this.clock().toISOString();
-    for (const codeHash of codeHashes) this.state.invites.push({ codeHash, createdAt, redeemedAt: null, handle: null });
+    for (const codeHash of codeHashes) this.state.invites.push({ codeHash, createdAt, redeemedAt: null, handle: null, lifetimeAllocationUsd });
     this.save();
   }
 
@@ -179,7 +203,7 @@ export class HostedStateStore {
     const now = this.clock().toISOString();
     invite.redeemedAt = now;
     invite.handle = handle;
-    this.state.tokens.push({ tokenHash, handle, createdAt: now, revokedAt: null });
+    this.state.tokens.push({ tokenHash, handle, createdAt: now, revokedAt: null, lifetimeAllocationUsd: invite.lifetimeAllocationUsd ?? null, lifetimeSpentUsd: 0 });
     this.save();
     return "ok";
   }

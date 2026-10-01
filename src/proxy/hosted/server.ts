@@ -26,14 +26,15 @@ import { sanitizeHostedBody } from "./sanitize.js";
 import {
   adminTokenMatches, canonicalInviteCode, newHandle, newInviteCode, newUserToken, sha256, userTokenHashFromHeader
 } from "./secrets.js";
-import { HostedStateStore, utcDateKey, type HostedConfig } from "./state.js";
+import { HostedStateStore, utcDateKey, validAllocation, type HostedConfig } from "./state.js";
 
 const LEDGER_PAGE_PATH = fileURLToPath(new URL("../ledger.html", import.meta.url));
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_ADMIN_BODY_BYTES = 64 * 1024;
 const MAX_INVITES_PER_CALL = 100;
 
-const usd = (value: number) => `$${value.toFixed(4)}`;
+// Same rule as the ledger page: sub-cent amounts keep enough digits to be nonzero.
+const usd = (value: number) => `$${Math.abs(value) > 0 && Math.abs(value) < 0.01 ? value.toFixed(6) : value.toFixed(4)}`;
 const OPERATOR_FAULT_MIN_TOKENS = 2;
 
 export interface HostedServerConfig {
@@ -239,7 +240,16 @@ export class HostedGateway {
 
     let poolSettled = false;
     try {
-      // Ceiling 2: this token's own daily cap, in its own governor.
+      // Ceiling 2: this token's own limits -- its lifetime allocation and its
+      // daily cap -- enforced together by its own governor.
+      const allocation = this.tenants.allocationUsd(handle);
+      if (this.tenants.allocationExhausted(handle)) {
+        this.recordRefusal(attemptId, handle, model, "TOKEN_ALLOCATION_EXHAUSTED", worstCase, 0, streaming);
+        sendJson(res, 402, err("sentinel_token_allocation_exhausted",
+          `This token's ${usd(allocation ?? 0)} allocation is used up (${usd(this.tenants.lifetimeSpentUsd(handle))} spent). It does not reset; ask the operator for more.`, "budget_exceeded"),
+          { "x-sentinel-refusal": "TOKEN_ALLOCATION_EXHAUSTED" });
+        return;
+      }
       if (this.tenants.capReached(handle)) {
         this.recordRefusal(attemptId, handle, model, "TOKEN_DAILY_CAP_REACHED", worstCase, 0, streaming);
         sendJson(res, 402, err("sentinel_token_daily_cap_reached",
@@ -253,7 +263,7 @@ export class HostedGateway {
         const remaining = this.tokenRemaining(handle);
         this.recordRefusal(attemptId, handle, model, admission.reason, worstCase, remaining, streaming);
         console.log(`[refused] ${handle} ${admission.reason} model=${model} worst_case=${usd(worstCase)} remaining=${usd(remaining)}`);
-        sendJson(res, 402, err(...this.tokenRefusal(admission.reason, worstCase, remaining, resetLabel), "budget_exceeded"), {
+        sendJson(res, 402, err(...this.tokenRefusal(admission.reason, worstCase, remaining, resetLabel, handle), "budget_exceeded"), {
           "x-sentinel-refusal": admission.reason, "x-sentinel-worst-case-usd": String(worstCase), "x-sentinel-remaining-usd": String(remaining)
         });
         return;
@@ -358,10 +368,33 @@ export class HostedGateway {
     }
   }
 
-  private tokenRefusal(reason: AdmissionRefusalReason, worstCase: number, remaining: number, resetLabel: string): [string, string] {
+  private tokenView(handle: string, spentTodayUsd: number) {
+    const t = this.store.findTokenByHandle(handle)!;
+    const allocation = t.lifetimeAllocationUsd ?? null;
+    const lifetimeSpent = t.lifetimeSpentUsd ?? 0;
+    return {
+      handle: t.handle, created_at: t.createdAt, revoked_at: t.revokedAt,
+      spent_today_usd: spentTodayUsd,
+      lifetime_spent_usd: lifetimeSpent,
+      lifetime_allocation_usd: allocation,
+      lifetime_remaining_usd: allocation === null ? null : Math.max(0, Math.round((allocation - lifetimeSpent) * 1e9) / 1e9),
+      remaining_now_usd: this.tenants.remainingUsd(handle),
+      quarantined: this.tenants.quarantined(t.handle)
+    };
+  }
+
+  private tokenRefusal(reason: AdmissionRefusalReason, worstCase: number, remaining: number, resetLabel: string, handle: string): [string, string] {
     switch (reason) {
-      case "BUDGET_EXCEEDED":
-        return ["sentinel_budget_exceeded", `This request's worst case ${usd(worstCase)} exceeds what this token has left today (${usd(remaining)}). Lower max_tokens, or wait for the reset at ${resetLabel}.`];
+      case "BUDGET_EXCEEDED": {
+        // Say which limit is binding: waiting for midnight does not help a
+        // token whose allocation is what ran short.
+        const allocation = this.tenants.allocationUsd(handle);
+        const dailyLeft = this.tenants.capUsd() - this.tenants.spentTodayUsd(handle);
+        const allocationBinds = allocation !== null && allocation - this.tenants.lifetimeSpentUsd(handle) < dailyLeft;
+        return ["sentinel_budget_exceeded", allocationBinds
+          ? `This request's worst case ${usd(worstCase)} exceeds what is left of this token's ${usd(allocation)} allocation (${usd(remaining)}). Lower max_tokens, or ask the operator for more.`
+          : `This request's worst case ${usd(worstCase)} exceeds what this token has left today (${usd(remaining)}). Lower max_tokens, or wait for the reset at ${resetLabel}.`];
+      }
       case "QUARANTINED":
         return ["sentinel_quarantined", "This token's accounting was halted after a call cost more than Sentinel reserved for it. It stays halted until the operator restarts the service. Other tokens are unaffected."];
       case "MODEL_UNPRICED":
@@ -372,7 +405,7 @@ export class HostedGateway {
   }
 
   private tokenRemaining(handle: string): number {
-    return Math.max(0, Math.round((this.tenants.capUsd() - this.tenants.spentTodayUsd(handle)) * 1e9) / 1e9);
+    return this.tenants.remainingUsd(handle);
   }
 
   private recordRefusal(attemptId: string, handle: string, model: string, reason: string, worstCase: number | null, remaining: number, streaming: boolean): void {
@@ -404,6 +437,7 @@ export class HostedGateway {
       note: "Shown once. Sentinel stores only a hash of this token; if you lose it, ask for a new invite.",
       usage: "Use as an OpenAI-compatible API key: base URL <this host>/v1, Authorization: Bearer <token>.",
       daily_cap_usd: this.tenants.capUsd(),
+      lifetime_allocation_usd: this.tenants.allocationUsd(handle),
       models: this.servedModels()
     });
   }
@@ -430,22 +464,32 @@ export class HostedGateway {
 
     if (method === "POST" && url === "/admin/invites") {
       const count = Math.min(MAX_INVITES_PER_CALL, Math.max(1, Math.floor(Number(body.count ?? 1)) || 1));
+      const allocation = body.lifetimeAllocationUsd ?? null;
+      if (!validAllocation(allocation)) { sendJson(res, 400, err("invalid_body", "lifetimeAllocationUsd must be a non-negative number, or null for none.")); return; }
       const codes = Array.from({ length: count }, () => newInviteCode());
-      this.store.addInvites(codes.map((c) => sha256(c)));
-      console.log(`[admin] issued ${count} invite code(s)`);
-      sendJson(res, 201, { codes, note: "Shown once. Sentinel stores only hashes of these codes." });
+      this.store.addInvites(codes.map((c) => sha256(c)), allocation);
+      console.log(`[admin] issued ${count} invite code(s)${allocation === null ? "" : ` carrying a ${usd(allocation)} lifetime allocation`}`);
+      sendJson(res, 201, { codes, lifetime_allocation_usd: allocation, note: "Shown once. Sentinel stores only hashes of these codes." });
       return;
     }
     if (method === "GET" && url === "/admin/tokens") {
       const today = this.store.today();
       sendJson(res, 200, {
         date: today.date,
-        tokens: this.store.tokens().map((t) => ({
-          handle: t.handle, created_at: t.createdAt, revoked_at: t.revokedAt,
-          spent_today_usd: today.byHandle[t.handle] ?? 0, quarantined: this.tenants.quarantined(t.handle)
-        })),
+        tokens: this.store.tokens().map((t) => this.tokenView(t.handle, today.byHandle[t.handle] ?? 0)),
         invites: { issued: this.store.invites().length, redeemed: this.store.invites().filter((i) => i.redeemedAt).length }
       });
+      return;
+    }
+    const tokenRoute = /^\/admin\/tokens\/([a-z0-9_-]{1,40})$/.exec(url);
+    if (method === "PATCH" && tokenRoute) {
+      const handle = tokenRoute[1];
+      const unknown = Object.keys(body).filter((k) => k !== "lifetimeAllocationUsd");
+      if (unknown.length || !("lifetimeAllocationUsd" in body)) { sendJson(res, 400, err("invalid_body", "PATCH /admin/tokens/<handle> takes exactly {\"lifetimeAllocationUsd\": <usd or null>}.")); return; }
+      if (!validAllocation(body.lifetimeAllocationUsd)) { sendJson(res, 400, err("invalid_body", "lifetimeAllocationUsd must be a non-negative number, or null for none.")); return; }
+      if (!this.store.setLifetimeAllocation(handle, body.lifetimeAllocationUsd)) { sendJson(res, 404, err("not_found", `No token with handle ${handle}.`)); return; }
+      console.log(`[admin] ${handle} lifetime allocation set to ${body.lifetimeAllocationUsd === null ? "none" : usd(body.lifetimeAllocationUsd)}`);
+      sendJson(res, 200, this.tokenView(handle, this.tenants.spentTodayUsd(handle)));
       return;
     }
     const revokeOne = /^\/admin\/tokens\/([a-z0-9_-]{1,40})\/revoke$/.exec(url);
@@ -482,7 +526,17 @@ export class HostedGateway {
         console.log(`[admin] config updated: ${Object.keys(body).join(", ")}`);
       }
       const unpriced = this.store.config.modelAllowlist.filter((id) => !this.config.prices[id]);
-      sendJson(res, 200, { config: this.store.config, allowlisted_but_unpriced: unpriced });
+      sendJson(res, 200, {
+        config: this.store.config,
+        allowlisted_but_unpriced: unpriced,
+        // What a client needs to compute the exact worst case Sentinel will
+        // reserve for a request, before sending it (used by the live smoke test).
+        pricing: {
+          reservation_safety_multiplier: this.config.reservationSafetyMultiplier,
+          default_max_tokens: this.config.defaultMaxTokens,
+          models: this.servedModels().map((id) => ({ id, input_per_million_usd: this.config.prices[id].inputPerMillionUsd, output_per_million_usd: this.config.prices[id].outputPerMillionUsd }))
+        }
+      });
       return;
     }
     sendJson(res, 404, err("not_found", "Unknown admin route."));

@@ -62,8 +62,7 @@ interface TenantEntry {
   governor: BudgetGovernor;
   date: string;
   capUsd: number;
-  /** What the token had already spent today when this instance was built. */
-  seededUsd: number;
+  allocationUsd: number | null;
 }
 
 export interface TenantSettings {
@@ -84,9 +83,32 @@ export class TenantGovernors {
 
   capReached(handle: string): boolean { return this.spentTodayUsd(handle) >= this.capUsd(); }
 
+  /** The token's lifetime allocation, or null when it has none. */
+  allocationUsd(handle: string): number | null { return this.store.findTokenByHandle(handle)?.lifetimeAllocationUsd ?? null; }
+
+  lifetimeSpentUsd(handle: string): number { return this.store.findTokenByHandle(handle)?.lifetimeSpentUsd ?? 0; }
+
+  allocationExhausted(handle: string): boolean {
+    const allocation = this.allocationUsd(handle);
+    return allocation !== null && this.lifetimeSpentUsd(handle) >= allocation;
+  }
+
+  /**
+   * What this token can still spend right now: the smaller of today's cap and
+   * its lifetime allocation. Both shrink by exactly the same amount on every
+   * commit, so one governor budget built from the smaller one enforces both.
+   */
+  remainingUsd(handle: string): number {
+    const daily = this.capUsd() - this.spentTodayUsd(handle);
+    const allocation = this.allocationUsd(handle);
+    const lifetime = allocation === null ? Number.POSITIVE_INFINITY : allocation - this.lifetimeSpentUsd(handle);
+    return Math.max(0, round(Math.min(daily, lifetime)));
+  }
+
   /**
    * The governor this request should reserve against. Rebuilt when the UTC
-   * day or the cap changes -- its budget is fixed at construction -- but only
+   * day, the daily cap or the token's allocation changes -- its budget is
+   * fixed at construction -- but only
    * while idle, so an in-flight reservation is never orphaned on an instance
    * nobody consults any more. A quarantined instance is never rebuilt
    * automatically.
@@ -94,19 +116,19 @@ export class TenantGovernors {
   governorFor(handle: string): BudgetGovernor {
     const date = this.store.today().date;
     const capUsd = this.capUsd();
+    const allocationUsd = this.allocationUsd(handle);
     const existing = this.entries.get(handle);
     if (existing) {
       const snap = existing.governor.snapshot();
       const idle = snap.activeReservations === 0;
-      const stale = existing.date !== date || existing.capUsd !== capUsd;
+      const stale = existing.date !== date || existing.capUsd !== capUsd || existing.allocationUsd !== allocationUsd;
       if (!stale || !idle || snap.quarantined) return existing.governor;
     }
-    const seededUsd = this.spentTodayUsd(handle);
-    const remaining = round(capUsd - seededUsd);
+    const remaining = this.remainingUsd(handle);
     const governor = new BudgetGovernor(
       {
         // Never non-positive: the governor rejects that, and a spent-out token
-        // is refused by capReached() before it gets here anyway.
+        // is refused by capReached() / allocationExhausted() before it gets here.
         budgetUsd: remaining > 0 ? remaining : 1e-9,
         reservationTtlMs: this.settings.reservationTtlMs,
         reservationSafetyMultiplier: this.settings.reservationSafetyMultiplier,
@@ -116,7 +138,7 @@ export class TenantGovernors {
       // Long-running service: recent events only. Our own call ledger is the record.
       new ReservationLedger(undefined, { maxInMemoryEvents: 200 })
     );
-    this.entries.set(handle, { governor, date, capUsd, seededUsd });
+    this.entries.set(handle, { governor, date, capUsd, allocationUsd });
     return governor;
   }
 
