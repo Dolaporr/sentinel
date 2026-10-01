@@ -87,6 +87,11 @@ function startStub(): Server {
       markerSeenUpstream ||= raw.includes(PROMPT_MARKER);
       lastUpstreamBody = JSON.parse(raw || "{}");
       const mode = String(lastUpstreamBody.user ?? "");
+      if (mode === "operator-auth") {
+        res.writeHead(401, { "content-type": "application/json" });
+        res.end(JSON.stringify({ error: { code: "invalid_api_key", message: "Encrypt locally with the Incognito adapter" } }));
+        return;
+      }
       if (mode === "error") {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: { message: `upstream rejected key ${auth}` } }));
@@ -308,6 +313,10 @@ async function endToEnd() {
   check("(control) the stub really echoed it -- redaction fired on JSON", echoed.text.includes("[redacted]"));
   check("(control) redaction fired on the error body", errored.status === 400 && errored.text.includes("[redacted]"));
   check("(control) redaction fired on the split stream", streamed.text.includes("[redacted]"));
+  const operator = await chat(tokA, { user: "operator-auth" });
+  check("upstream 401 on the operator's key -> 503 that says it is Sentinel's side", operator.status === 503 && operator.json?.error?.code === "sentinel_upstream_credentials" && /not yours/.test(operator.json.error.message));
+  check("the upstream's own 401 body is not passed to the caller", !operator.text.includes("Incognito"));
+  check("a caller-side upstream error (400) still passes through", errored.status === 400);
 
   console.log("\n13. state, restart, and revoke-all");
   const health = await call("/healthz");

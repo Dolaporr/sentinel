@@ -273,6 +273,18 @@ export class HostedGateway {
         },
         redactClientBodies: true,
         logUpstreamErrorBodies: false,
+        // 401/402 from upstream mean the operator's key was rejected or is out
+        // of credit. Orbio's own body for this talks about client-side
+        // encryption setup -- true for the key's owner, actively misleading
+        // for a caller who has never seen that key.
+        replaceUpstreamError: (status) => {
+          if (status !== 401 && status !== 402) return null;
+          console.error(`[OPERATOR] upstream returned ${status} for the operator's key -- every request will fail until it is fixed or funded`);
+          return {
+            status: 503,
+            body: err("sentinel_upstream_credentials", "Sentinel's upstream provider rejected the operator's credentials or balance. This is on Sentinel's side, not yours; nothing was generated.", "service_unavailable")
+          };
+        },
         sink: {
           exact: async (costUsd, isStream) => {
             await governor.commitExact(attemptId, costUsd);

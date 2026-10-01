@@ -119,6 +119,12 @@ export interface DispatchOptions {
    * are other people's prompts. Log the status, not the body.
    */
   logUpstreamErrorBodies?: boolean;
+  /**
+   * Hosted only: some upstream errors are about the operator, not the caller
+   * (a rejected or unfunded operator key). Returning a replacement here sends
+   * that instead of the upstream body. Settlement is unchanged either way.
+   */
+  replaceUpstreamError?: (status: number) => { status: number; body: unknown } | null;
 }
 
 export async function dispatchAdmitted(o: DispatchOptions): Promise<void> {
@@ -178,6 +184,13 @@ async function settleUpstreamError(o: DispatchOptions, upstream: Response, toCli
   await o.sink.estimated(`upstream_status:${upstream.status}`, o.streaming, 0);
   const detail = o.logUpstreamErrorBodies === false ? "(body not logged)" : redact(text.slice(0, 200), o.apiKey);
   console.error(`[upstream ${upstream.status}] ${o.reservation.attemptId}: ${detail}`);
+  const replacement = o.replaceUpstreamError?.(upstream.status);
+  if (replacement) {
+    const payload = JSON.stringify(replacement.body);
+    o.res.writeHead(replacement.status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...o.headers });
+    o.res.end(payload);
+    return;
+  }
   o.res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...o.headers });
   o.res.end(toClient(text));
 }

@@ -106,6 +106,11 @@ The proxy's verified surface, limitations, and configuration are in
 [`docs/PROXY.md`](docs/PROXY.md). Editor and agent integrations are deliberately
 not claimed until each has completed a real request through it.
 
+A **hosted** variant serves free governed inference on invite-issued tokens,
+with a shared daily pool and a per-token cap in front of the operator's key —
+the giveaway is only safe because of the governor. See
+[`docs/HOSTED.md`](docs/HOSTED.md).
+
 It also serves a **ledger page** at `GET /` — spend today against budget,
 broken down by agent and by model, every refusal with what it would have cost,
 the single most expensive call. Agent attribution reuses the client's bearer
