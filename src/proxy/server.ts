@@ -8,9 +8,12 @@ import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governo
 import { BIND_HOST, UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
 import { priceDrift, resolvePriceTable } from "./prices.js";
 import { DailySpendStore, resolveDailyBudget } from "./spend.js";
-import { deriveInputTokens, estimateOutputTokens, type ChatCompletionRequest } from "./messages.js";
+import { deriveInputTokens, type ChatCompletionRequest } from "./messages.js";
 import { agentLabelFromHeader } from "./agent-label.js";
 import { buildLedgerViewModel, CallLedger } from "./call-ledger.js";
+import { dispatchAdmitted } from "./dispatch.js";
+
+export { StreamAccumulator } from "./dispatch.js";
 
 const ROUTE = "/v1/chat/completions";
 const MODELS_ROUTE = "/v1/models";
@@ -27,14 +30,6 @@ const MAX_BODY_BYTES = 8 * 1024 * 1024;
 const LEDGER_PAGE_PATH = fileURLToPath(new URL("./ledger.html", import.meta.url));
 const round = (value: number) => Math.round(value * 1_000_000_000) / 1_000_000_000;
 
-/**
- * Upstream error bodies are echoed into our logs, and a gateway that reflects
- * the submitted key in an error would otherwise write it to disk. The key is
- * never logged deliberately; this is the accidental path.
- */
-function redact(text: string, secret: string | undefined): string {
-  return secret && secret.length >= 8 ? text.split(secret).join("[redacted]") : text;
-}
 const usd = (value: number) => `$${value.toFixed(4)}`;
 const usd6 = (value: number) => `$${value.toFixed(6)}`;
 const perMillion = (value: number) => `$${value.toFixed(4)}/M`;
@@ -159,49 +154,6 @@ function readBody(req: IncomingMessage): Promise<Buffer> {
     req.on("end", () => resolve(Buffer.concat(chunks)));
     req.on("error", reject);
   });
-}
-
-/** Accumulates a passed-through SSE stream so usage can be read from its tail. */
-export class StreamAccumulator {
-  private buffered = "";
-  private text = "";
-  usage: Record<string, unknown> | null = null;
-  sawDone = false;
-
-  ingest(chunk: string): void {
-    this.buffered += chunk;
-    const lines = this.buffered.split("\n");
-    this.buffered = lines.pop() ?? "";
-    for (const line of lines) this.ingestLine(line.trim());
-  }
-
-  private ingestLine(line: string): void {
-    if (!line.startsWith("data:")) return;
-    const data = line.slice(5).trim();
-    if (data === "[DONE]") { this.sawDone = true; return; }
-    let parsed: unknown;
-    try { parsed = JSON.parse(data); } catch { return; }
-    if (!parsed || typeof parsed !== "object") return;
-    const record = parsed as Record<string, unknown>;
-    // §3: usage arrives on the terminating chunk, which carries no choices.
-    if (record.usage && typeof record.usage === "object") this.usage = record.usage as Record<string, unknown>;
-    const choices = record.choices;
-    if (!Array.isArray(choices)) return;
-    for (const choice of choices) {
-      const delta = (choice as { delta?: { content?: unknown } })?.delta;
-      if (delta && typeof delta.content === "string") this.text += delta.content;
-    }
-  }
-
-  outputTokens(): number {
-    const reported = this.usage?.completion_tokens;
-    if (typeof reported === "number" && Number.isFinite(reported)) return reported;
-    return estimateOutputTokens(this.text);
-  }
-  // No cost() method: reading a real cost out of `usage` is provider-specific
-  // (see Provider.readExactCostUsd), and this class stays purely mechanical --
-  // it accumulates whatever the stream sent, and does not know what any of the
-  // fields mean.
 }
 
 export class SentinelProxy {
@@ -479,138 +431,26 @@ export class SentinelProxy {
       `${maxTokensInjected ? " (injected)" : ""} reserved=${usd(reservation.amountUsd)} streaming=${streaming}`
     );
 
-    const upstreamBody: ChatCompletionRequest = { ...body, max_tokens: maxTokens };
-    if (streaming) {
-      // §3: ask for usage on the terminating chunk. We verify rather than assume —
-      // if the gateway ignores it, the accumulator falls back to observed output.
-      const existing = (body.stream_options ?? {}) as Record<string, unknown>;
-      upstreamBody.stream_options = { ...existing, include_usage: true };
-    }
-
-    const controller = new AbortController();
-    // Never let a dispatch outlive its reservation: a late result would land in the
-    // governor's LATE_RESULT_REJECTED path and quarantine every later admission.
-    const timer = setTimeout(() => controller.abort(), Math.max(1, reservation.expiresAtMs - Date.now() - 1));
-
-    try {
-      const upstream = await fetch(UPSTREAM_URL, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...this.config.provider.authHeaders(this.config.apiKey ?? ""),
-          accept: streaming ? "text/event-stream" : "application/json"
-        },
-        body: JSON.stringify(upstreamBody),
-        signal: controller.signal
-      });
-
-      const passthrough: Record<string, string> = {
+    await dispatchAdmitted({
+      upstreamUrl: UPSTREAM_URL,
+      provider: this.config.provider,
+      apiKey: this.config.apiKey,
+      body: { ...body, max_tokens: maxTokens },
+      streaming,
+      reservation,
+      res,
+      headers: {
         "x-sentinel-attempt-id": attemptId,
         "x-sentinel-reserved-usd": String(reservation.amountUsd),
         "x-sentinel-input-tokens": String(inputTokens),
         "x-sentinel-max-tokens": String(maxTokens),
         "x-sentinel-max-tokens-injected": String(maxTokensInjected)
-      };
-
-      if (!upstream.ok) { await this.settleUpstreamError(upstream, res, reservation, passthrough, agent, streaming); return; }
-      if (streaming) await this.settleStream(upstream, res, reservation, passthrough, agent);
-      else await this.settleJson(upstream, res, reservation, passthrough, agent);
-    } catch (error) {
-      const aborted = controller.signal.aborted;
-      const reason = aborted ? "reservation_deadline_exceeded" : `dispatch_failed:${error instanceof Error ? error.name : "unknown"}`;
-      // Nothing was streamed back, so no output was observed. Zero output tokens
-      // still commits the input leg: never a silent release, never a silent zero.
-      await this.commitEstimatedAndPersist(reservation, reason, agent, streaming, 0);
-      console.error(`[${reason}] ${attemptId}: ${error instanceof Error ? error.message : String(error)}`);
-      if (!res.headersSent) {
-        sendJson(res, aborted ? 504 : 502, { error: { message: `Sentinel proxy could not complete the upstream call: ${reason}`, type: "api_error", code: reason, param: null } });
-      } else {
-        res.end();
+      },
+      sink: {
+        exact: (costUsd, isStream) => this.commitExactAndPersist(reservation, costUsd, agent, isStream),
+        estimated: (reason, isStream, outputTokens) => this.commitEstimatedAndPersist(reservation, reason, agent, isStream, outputTokens)
       }
-    } finally {
-      clearTimeout(timer);
-    }
-  }
-
-  /** An upstream rejection generated no output, but the request is still resolved, not released. */
-  private async settleUpstreamError(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string, streaming: boolean): Promise<void> {
-    const text = await upstream.text();
-    await this.commitEstimatedAndPersist(reservation, `upstream_status:${upstream.status}`, agent, streaming, 0);
-    console.error(`[upstream ${upstream.status}] ${reservation.attemptId}: ${redact(text.slice(0, 200), this.config.apiKey)}`);
-    res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
-    res.end(text);
-  }
-
-  /** §2 step 6: commit the exact usage.cost, pass the body through untouched. */
-  private async settleJson(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string): Promise<void> {
-    const text = await upstream.text();
-    let cost: number | null = null;
-    let outputTokens: number | undefined;
-    try {
-      const parsed = JSON.parse(text) as { usage?: Record<string, unknown>; choices?: unknown };
-      cost = this.config.provider.readExactCostUsd(parsed.usage);
-      const rawTokens = parsed.usage?.completion_tokens;
-      if (typeof rawTokens === "number" && Number.isFinite(rawTokens)) outputTokens = rawTokens;
-    } catch { /* fall through to the estimated path */ }
-
-    if (cost !== null) {
-      await this.commitExactAndPersist(reservation, cost, agent, false);
-      headers["x-sentinel-cost-source"] = "exact";
-      headers["x-sentinel-cost-usd"] = String(cost);
-      console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)}`);
-    } else {
-      await this.commitEstimatedAndPersist(reservation, "missing_usage_cost", agent, false, outputTokens);
-      headers["x-sentinel-cost-source"] = "estimated";
-      console.log(`[committed estimated] ${reservation.attemptId} reason=missing_usage_cost output_tokens=${outputTokens ?? "unknown"}`);
-    }
-    res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
-    res.end(text);
-  }
-
-  /** §3: pass chunks through as they arrive, accumulate to read usage from the tail. */
-  private async settleStream(upstream: Response, res: ServerResponse, reservation: Reservation, headers: Record<string, string>, agent: string): Promise<void> {
-    res.writeHead(upstream.status, {
-      "content-type": upstream.headers.get("content-type") ?? "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
-      ...headers
     });
-
-    const accumulator = new StreamAccumulator();
-    const decoder = new TextDecoder();
-    const reader = upstream.body?.getReader();
-    let cut: Error | null = null;
-
-    if (!reader) {
-      await this.commitEstimatedAndPersist(reservation, "stream_without_body", agent, true, 0);
-      res.end();
-      return;
-    }
-
-    try {
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const chunk = decoder.decode(value, { stream: true });
-        accumulator.ingest(chunk);
-        res.write(chunk);
-      }
-    } catch (error) {
-      cut = error instanceof Error ? error : new Error(String(error));
-    }
-
-    const cost = this.config.provider.readExactCostUsd(accumulator.usage ?? undefined);
-    if (cut === null && cost !== null) {
-      await this.commitExactAndPersist(reservation, cost, agent, true);
-      console.log(`[committed exact] ${reservation.attemptId} cost=${usd(cost)} (stream)`);
-    } else {
-      // A cut stream still burned tokens, and a clean stream with no usage still
-      // cost money. Estimate from what we actually saw; never a silent zero.
-      const reason = cut ? "stream_cut" : accumulator.sawDone ? "stream_without_usage" : "stream_ended_without_done";
-      await this.commitEstimatedAndPersist(reservation, reason, agent, true, accumulator.outputTokens());
-      console.log(`[committed estimated] ${reservation.attemptId} reason=${reason} output_tokens=${accumulator.outputTokens()}`);
-    }
-    res.end();
   }
 
   listen(): ReturnType<typeof createServer> {
