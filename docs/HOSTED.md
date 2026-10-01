@@ -202,6 +202,35 @@ A user redeems with:
 curl -X POST $H/v1/redeem -d '{"code": "SNT-XXXX-XXXX-XXXX-XXXX"}'
 ```
 
+## Smoke test against a deployment
+
+```bash
+SENTINEL_HOSTED_ADMIN_TOKEN=... npm run hosted:verify -- --url https://<host>
+# or: npm run hosted:verify -- --url https://<host> --admin <token>
+```
+
+Runs the §7 sequence against the live service and prints PASS/FAIL per step:
+issue an invite, redeem it, **one real call** on an allowlisted model, the
+ledger moved, a second call past the token's cap refused before dispatch,
+pause, a call refused while paused, resume.
+
+- **It tells you what it will spend first.** Before anything is spent it prints
+  the worst case Sentinel will reserve for the one real call — computed with the
+  server's own pricing and token-estimation functions, and checked afterwards
+  against what the server actually reserved — and stops unless you confirm.
+  Off a terminal it needs `--yes`. `--max-spend` (default $0.01) refuses runs
+  whose bound is higher.
+- **Safe to re-run.** It never calls revoke-all. The cap test narrows only the
+  token it minted (through that token's lifetime allocation), never the shared
+  caps. At the end it revokes only its own token and resumes only a pause it
+  caused. It will not start against a service that is already paused, because
+  resuming at the end would undo the operator's pause.
+- **It does pause the whole service for about a second**, so every user is
+  refused during that window.
+- No secret — admin token, invite code, user token — is ever printed.
+
+Without `--url`, `npm run hosted:verify` is the offline suite against a stub.
+
 ## Limitations
 
 - **One process.** See Railway above. Horizontal scaling needs the pool's

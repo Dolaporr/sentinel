@@ -19,6 +19,13 @@ import { StreamRedactor } from "../../src/proxy/dispatch.js";
 import { sanitizeHostedBody } from "../../src/proxy/hosted/sanitize.js";
 import { adminTokenMatches, canonicalInviteCode, newInviteCode } from "../../src/proxy/hosted/secrets.js";
 
+// With --url this is the live smoke test against a deployed service (see
+// hosted-smoke.ts); without it, the full suite against a local stub below.
+if (process.argv.includes("--url") || process.argv.includes("--help")) {
+  const { runSmoke } = await import("./hosted-smoke.js");
+  process.exit(await runSmoke(process.argv.slice(2)));
+}
+
 // ------------------------------------------------------------------ harness
 
 const UPSTREAM_KEY = "sk-orbio-HOSTED-TEST-KEY-must-never-leak-0123456789abcdef";
