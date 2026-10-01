@@ -90,6 +90,39 @@ export function deriveInputTokens(body: ChatCompletionRequest): number {
 export const chatTemplateOverhead = (messageCount: number) =>
   messageCount * PER_MESSAGE_OVERHEAD_TOKENS + REPLY_PRIMING_TOKENS;
 
+export type OutputCeiling =
+  | { ok: true; declaredMaxTokens: number | null }
+  | { ok: false; message: string; param: string };
+
+const positiveNumber = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null);
+
+/**
+ * The one output ceiling a reservation is priced against, and the checks that
+ * keep the gateway from billing past it.
+ *
+ * - `n` > 1 asks for n completions, each up to max_tokens, against a
+ *   reservation for one: an n-fold cap bypass. Refused rather than multiplied,
+ *   because whether a gateway bills the prompt once or n times is not
+ *   something this proxy can see.
+ * - `max_completion_tokens` is OpenAI's newer name for the same ceiling.
+ *   Forwarded beside an injected `max_tokens`, a gateway may honour the larger
+ *   one. Both are folded into one value (the lower, when both are set), and
+ *   withOutputCeiling sends only `max_tokens` upstream.
+ */
+export function outputCeiling(body: ChatCompletionRequest): OutputCeiling {
+  if (body.n !== undefined && body.n !== null && body.n !== 1) {
+    return { ok: false, param: "n", message: "Sentinel serves one completion per request: `n` must be 1. Each extra completion would spend up to max_tokens beyond what was reserved." };
+  }
+  const ceilings = [positiveNumber(body.max_tokens), positiveNumber(body.max_completion_tokens)].filter((v): v is number => v !== null);
+  return { ok: true, declaredMaxTokens: ceilings.length ? Math.min(...ceilings) : null };
+}
+
+/** The body as it goes upstream: exactly one output ceiling, the one that was reserved. */
+export function withOutputCeiling(body: ChatCompletionRequest, maxTokens: number): ChatCompletionRequest {
+  const { max_completion_tokens: _dropped, n: _one, ...rest } = body;
+  return { ...rest, max_tokens: maxTokens };
+}
+
 /** Counts output tokens from streamed text when the gateway gives us no usage. */
 export function estimateOutputTokens(text: string): number {
   return text.length === 0 ? 0 : estimateTokens(text);
