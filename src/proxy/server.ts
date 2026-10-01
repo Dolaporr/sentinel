@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { BudgetGovernor } from "../governor/governor.js";
 import { ReservationLedger } from "../governor/ledger.js";
-import type { AdmissionRefusalReason, PriceEntry, Reservation } from "../governor/types.js";
+import type { AdmissionRefusalReason, Reservation } from "../governor/types.js";
 import { BIND_HOST, UPSTREAM_URL, loadConfig, type ProxyConfig } from "./config.js";
 import { priceDrift, resolvePriceTable } from "./prices.js";
 import { DailySpendStore, resolveDailyBudget } from "./spend.js";
@@ -12,6 +12,7 @@ import { deriveInputTokens, type ChatCompletionRequest } from "./messages.js";
 import { agentLabelFromHeader } from "./agent-label.js";
 import { buildLedgerViewModel, CallLedger } from "./call-ledger.js";
 import { dispatchAdmitted } from "./dispatch.js";
+import { modelsBody, readBody, sendJson, worstCaseUsd } from "./http.js";
 
 export { StreamAccumulator } from "./dispatch.js";
 
@@ -60,15 +61,6 @@ function quarantineMessage(cause: QuarantineCause | null): string {
 }
 
 /**
- * Mirrors BudgetGovernor.estimateWorstCase, which is private. The proxy needs the
- * number before it has a reservation, because a refusal must tell the caller what
- * it was refused for. Keep in sync with src/governor/governor.ts.
- */
-function worstCaseUsd(price: PriceEntry, inputTokens: number, maxTokens: number, multiplier: number): number {
-  return round(((inputTokens * price.inputPerMillionUsd + maxTokens * price.outputPerMillionUsd) / 1_000_000) * multiplier);
-}
-
-/**
  * §2 step 4: every governor refusal is an HTTP 402 with a body the calling tool
  * will surface to a human. Cursor and Codex print `error.message` verbatim, so
  * the message carries the numbers rather than a bare code.
@@ -104,56 +96,6 @@ function refusalBody(reason: AdmissionRefusalReason, context: { worstCase: numbe
     }
   };
   return { error: { ...shapes[reason], param: null } };
-}
-
-/**
- * Synthesised from the price table already resident in memory at startup, not
- * proxied live to the gateway. Most OpenAI-compatible clients -- Cursor is
- * confirmed to -- GET this on connect to populate a model dropdown and confirm
- * the endpoint is real, before the user can even attempt a completion. Serving
- * it from the table we already loaded costs nothing per connect and lists
- * exactly the models this proxy can actually admit; proxying it live would add
- * a gateway round trip to every client's connection check for no more truth,
- * since admission is checked against this same table regardless.
- */
-function modelsBody(prices: Readonly<Record<string, PriceEntry>>, defaultOwner: string): { object: "list"; data: Array<{ id: string; object: "model"; created: number; owned_by: string }> } {
-  const data = Object.entries(prices)
-    .map(([id, price]) => {
-      const created = Math.floor(Date.parse(price.verifiedAt) / 1000);
-      const slash = id.indexOf("/");
-      return {
-        id,
-        object: "model" as const,
-        created: Number.isFinite(created) ? created : 0,
-        owned_by: slash === -1 ? defaultOwner : id.slice(0, slash)
-      };
-    })
-    .sort((a, b) => a.id.localeCompare(b.id));
-  return { object: "list", data };
-}
-
-function sendJson(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
-  const payload = JSON.stringify(body);
-  res.writeHead(status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...headers });
-  res.end(payload);
-}
-
-function readBody(req: IncomingMessage): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const chunks: Buffer[] = [];
-    let size = 0;
-    req.on("data", (chunk: Buffer) => {
-      size += chunk.length;
-      if (size > MAX_BODY_BYTES) {
-        reject(new Error("request body exceeds 8MB"));
-        req.destroy();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
 }
 
 export class SentinelProxy {
@@ -340,7 +282,7 @@ export class SentinelProxy {
   private async handleCompletion(req: IncomingMessage, res: ServerResponse): Promise<void> {
     let body: ChatCompletionRequest;
     try {
-      body = JSON.parse((await readBody(req)).toString("utf8")) as ChatCompletionRequest;
+      body = JSON.parse((await readBody(req, MAX_BODY_BYTES)).toString("utf8")) as ChatCompletionRequest;
     } catch (error) {
       sendJson(res, 400, { error: { message: `Malformed request body: ${error instanceof Error ? error.message : "unparseable"}`, type: "invalid_request_error", code: "invalid_body", param: null } });
       return;

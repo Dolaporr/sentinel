@@ -70,8 +70,8 @@ export class CallLedger {
    * A missing or corrupt file reads as no history, not an error: a fresh
    * install has nothing to show yet, and one bad line does not lose the rest.
    */
-  readToday(now: Date = new Date()): CallLedgerEntry[] {
-    const today = localDateKey(now);
+  readToday(now: Date = new Date(), dateKeyOf: (d: Date) => string = localDateKey): CallLedgerEntry[] {
+    const today = dateKeyOf(now);
     let raw: string;
     try {
       raw = readFileSync(this.filePath, "utf8");
@@ -83,7 +83,7 @@ export class CallLedger {
       if (!line.trim()) continue;
       try {
         const parsed = JSON.parse(line) as CallLedgerEntry;
-        if (typeof parsed.ts === "string" && localDateKey(new Date(parsed.ts)) === today) entries.push(parsed);
+        if (typeof parsed.ts === "string" && dateKeyOf(new Date(parsed.ts)) === today) entries.push(parsed);
       } catch {
         /* one corrupt line does not lose the rest of the day */
       }
@@ -222,6 +222,16 @@ export interface LedgerViewModel {
   sparkline: SparklinePoint[];
   /** Drives the empty state: a fresh install with no traffic explains itself. */
   hasAnyTraffic: boolean;
+  /** Present only on the hosted service: the page relabels itself and shows the shared pool. */
+  hosted?: {
+    poolCapUsd: number;
+    poolCommittedUsd: number;
+    poolRemainingUsd: number;
+    tokenDailyCapUsd: number;
+    models: string[];
+    resetsAt: string;
+    paused: boolean;
+  };
 }
 
 /**
@@ -230,10 +240,10 @@ export interface LedgerViewModel {
  * it, so the logic worth getting right lives here where it can be tested,
  * not duplicated in client-side JS.
  */
-export function buildLedgerViewModel(entries: readonly CallLedgerEntry[], budgetUsd: number, now: Date = new Date()): LedgerViewModel {
+export function buildLedgerViewModel(entries: readonly CallLedgerEntry[], budgetUsd: number, now: Date = new Date(), dateKeyOf: (d: Date) => string = localDateKey): LedgerViewModel {
   return {
     generatedAt: now.toISOString(),
-    date: localDateKey(now),
+    date: dateKeyOf(now),
     today: summarizeToday(entries, budgetUsd),
     byAgent: aggregateByAgent(entries),
     byModel: aggregateByModel(entries),
