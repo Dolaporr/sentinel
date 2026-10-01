@@ -31,6 +31,10 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   By scope-owner decision on 2026-10-01 ("fix and push"), `fix/railway-start` was merged to
   `main` to restore Railway builds (Railpack found no start command). That authorisation
   covered that merge only and the rule stands otherwise.
+  By scope-owner decision on 2026-10-01, `docs/ipv6-confirmed` was merged to `main` once the
+  live smoke test and the redeploy volume check had both passed, so the IPv6 confirmation
+  and the status lines landed together. That authorisation covered that merge only and the
+  rule stands otherwise.
 - `src/governor/` was frozen for the Build Week submission. By scope-owner decision on
   2026-10-01 that freeze is lifted: Claude Code may change the governor and its ledger
   (first change: bounded retention of resolved reservations and in-memory events).
