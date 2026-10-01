@@ -110,12 +110,15 @@ function startStub(): Server {
         return;
       }
       const cost = mode === "overbill" ? 0.001 : STUB_COST;
-      res.writeHead(200, { "content-type": "application/json" });
-      res.end(JSON.stringify({
+      const reply = () => res.end(JSON.stringify({
         id: "stub", object: "chat.completion", model: lastUpstreamBody.model,
         choices: [{ index: 0, message: { role: "assistant", content: `echo ${auth}` }, finish_reason: "stop" }],
         usage: { prompt_tokens: 12, completion_tokens: 5, cost }
       }));
+      res.writeHead(200, { "content-type": "application/json" });
+      // "slow" holds the call in flight, so a concurrent request has to be
+      // decided while this one's reservation is still held.
+      if (mode === "slow") setTimeout(reply, 300); else reply();
     });
   });
   server.listen(STUB_PORT);
@@ -357,6 +360,44 @@ async function endToEnd() {
   check("served again after resume", (await chat(tokA)).status === 200);
   check("operatorFaultPauseAfter is adjustable at runtime", (await admin("/admin/config", { operatorFaultPauseAfter: 5 }, "PATCH")).json.config.operatorFaultPauseAfter === 5);
 
+  console.log("\n12c. lifetime allocation per token, on top of the daily cap");
+  const allocInv = await admin("/admin/invites", { count: 1, lifetimeAllocationUsd: 0.0005 });
+  check("an invite can carry a lifetime allocation", allocInv.status === 201 && allocInv.json.lifetime_allocation_usd === 0.0005);
+  const redE = await call("/v1/redeem", { body: { code: allocInv.json.codes[0] } });
+  const tokE: string = redE.json.token; const handleE: string = redE.json.handle;
+  check("the token it mints starts with that allocation", redE.json.lifetime_allocation_usd === 0.0005);
+  const viewE = () => admin("/admin/tokens").then((r) => (r.json.tokens as any[]).find((t) => t.handle === handleE));
+  check("served while inside its allocation", (await chat(tokE)).status === 200);
+  const afterOne = await viewE();
+  check("lifetime spend is tracked", afterOne.lifetime_spent_usd === STUB_COST && afterOne.lifetime_remaining_usd === round(0.0005 - STUB_COST), JSON.stringify(afterOne));
+  check("remaining-now is the smaller of the two limits", afterOne.remaining_now_usd === afterOne.lifetime_remaining_usd);
+  const hE = stubHits;
+  const overAlloc = await chat(tokE, { max_tokens: 1000 });
+  check("worst case over the allocation's remainder -> 402 naming the allocation", overAlloc.status === 402 && overAlloc.json.error.code === "sentinel_budget_exceeded" && /allocation/.test(overAlloc.json.error.message) && !/reset at/.test(overAlloc.json.error.message), overAlloc.json?.error?.message);
+  check("refused before dispatch", stubHits === hE);
+
+  const w64 = Number((await chat(tokE, { max_tokens: 64 })).headers.get("x-sentinel-reserved-usd"));
+  const spentE = (await viewE()).lifetime_spent_usd;
+  await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: round(spentE + 1.5 * w64) }, "PATCH");
+  const [c1, c2] = await Promise.all([chat(tokE, { user: "slow" }), chat(tokE, { user: "slow" })]);
+  check("two concurrent calls that fit the allocation only once: exactly one admitted", [c1.status, c2.status].sort().join(",") === "200,402", `${c1.status},${c2.status}`);
+
+  await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: (await viewE()).lifetime_spent_usd }, "PATCH");
+  const allocDone = await chat(tokE);
+  check("allocation used up -> 402 that says it does not reset", allocDone.status === 402 && allocDone.json.error.code === "sentinel_token_allocation_exhausted" && /does not reset/.test(allocDone.json.error.message), allocDone.json?.error?.message);
+  check("the public ledger records it", ((await call("/ledger.json")).json.refusals as any[]).some((r) => r.agent === handleE && r.reason === "TOKEN_ALLOCATION_EXHAUSTED"));
+
+  await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: 100 }, "PATCH");
+  const daily = await chat(tokE, { max_tokens: 10_000 });
+  check("with a large allocation the daily cap still binds", daily.status === 402 && /left today/.test(daily.json.error.message), daily.json?.error?.message);
+  check("raising the allocation serves again, no redeploy", (await chat(tokE)).status === 200);
+  check("negative allocation refused", (await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: -1 }, "PATCH")).status === 400);
+  check("unknown field refused", (await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: 5, x: 1 }, "PATCH")).status === 400);
+  check("unknown handle -> 404", (await admin("/admin/tokens/t-000000", { lifetimeAllocationUsd: 5 }, "PATCH")).status === 404);
+  check("a user token cannot set allocations", (await call(`/admin/tokens/${handleE}`, { auth: tokE, body: { lifetimeAllocationUsd: 1000 }, method: "PATCH" })).status === 401);
+  await admin(`/admin/tokens/${handleE}`, { lifetimeAllocationUsd: 20 }, "PATCH");
+  const allocBeforeRestart = await viewE();
+
   console.log("\n13. state, restart, and revoke-all");
   const health = await call("/healthz");
   check("healthz reports the pool and no secret", health.json.pool.cap_usd === 1 && health.json.key_configured === true);
@@ -367,6 +408,7 @@ async function endToEnd() {
   const gw2 = new HostedGateway(gatewayConfig());
   const server2 = await listenOn(gw2);
   check("spend survives a restart", gw2.tenants.spentTodayUsd(handleA) === gw.tenants.spentTodayUsd(handleA));
+  check("lifetime allocation and lifetime spend survive a restart", gw2.tenants.allocationUsd(handleE) === 20 && gw2.tenants.lifetimeSpentUsd(handleE) === allocBeforeRestart.lifetime_spent_usd);
   check("revocation survives a restart", (await chat(tokC)).status === 401);
   check("tokens survive a restart", (await chat(tokA)).status === 200);
 
