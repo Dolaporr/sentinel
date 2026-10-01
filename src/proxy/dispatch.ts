@@ -94,7 +94,18 @@ export class StreamAccumulator {
 export interface SettlementSink {
   exact(costUsd: number, streaming: boolean): Promise<void>;
   estimated(reason: string, streaming: boolean, outputTokens?: number): Promise<void>;
+  /** The provider refused before running inference: $0, tagged not_billed. */
+  notBilled(reason: string, streaming: boolean): Promise<void>;
 }
+
+/**
+ * Upstream statuses that mean the provider refused the call before running
+ * it: credentials rejected (401) or not funded (402). Nothing was generated,
+ * so nothing was billed, and estimating a cost would be wrong rather than
+ * conservative. Every other error status is still settled as an estimate,
+ * because there Sentinel cannot see whether the gateway billed.
+ */
+export const NOT_BILLED_STATUSES: ReadonlySet<number> = new Set([401, 402]);
 
 export interface DispatchOptions {
   upstreamUrl: string;
@@ -181,17 +192,21 @@ export async function dispatchAdmitted(o: DispatchOptions): Promise<void> {
 /** An upstream rejection generated no output, but the request is still resolved, not released. */
 async function settleUpstreamError(o: DispatchOptions, upstream: Response, toClient: (text: string) => string): Promise<void> {
   const text = await upstream.text();
-  await o.sink.estimated(`upstream_status:${upstream.status}`, o.streaming, 0);
+  const reason = `upstream_status:${upstream.status}`;
+  const notBilled = NOT_BILLED_STATUSES.has(upstream.status);
+  if (notBilled) await o.sink.notBilled(reason, o.streaming);
+  else await o.sink.estimated(reason, o.streaming, 0);
+  const headers = notBilled ? { ...o.headers, "x-sentinel-cost-source": "not_billed", "x-sentinel-cost-usd": "0" } : o.headers;
   const detail = o.logUpstreamErrorBodies === false ? "(body not logged)" : redact(text.slice(0, 200), o.apiKey);
   console.error(`[upstream ${upstream.status}] ${o.reservation.attemptId}: ${detail}`);
   const replacement = o.replaceUpstreamError?.(upstream.status);
   if (replacement) {
     const payload = JSON.stringify(replacement.body);
-    o.res.writeHead(replacement.status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...o.headers });
+    o.res.writeHead(replacement.status, { "content-type": "application/json", "content-length": Buffer.byteLength(payload), ...headers });
     o.res.end(payload);
     return;
   }
-  o.res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...o.headers });
+  o.res.writeHead(upstream.status, { "content-type": upstream.headers.get("content-type") ?? "application/json", ...headers });
   o.res.end(toClient(text));
 }
 

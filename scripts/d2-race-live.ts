@@ -195,7 +195,7 @@ interface FeedEvent {
   committed_exact: number;
   committed_estimated: number;
   reserved_total: number;
-  cost_source: "exact" | "estimated" | null;
+  cost_source: "exact" | "estimated" | "not_billed" | null;
   reservation_safety_multiplier: number;
   mission_state: "complete" | "quarantined_unproductive" | null;
 }

@@ -331,7 +331,7 @@
     var stats = [
       { label: "Spent today", value: usd(today.spentUsd), sub: "of " + usd(today.budgetUsd) + (hosted ? " shared pool" : " budget") },
       { label: "Exact / estimated", value: usd(today.exactUsd), sub: today.estimatedUsd > 0 ? usd(today.estimatedUsd) + " estimated" : "nothing estimated" },
-      { label: "Calls made", value: String(today.callsMade), sub: "admitted and settled" },
+      { label: "Calls made", value: String(today.callsMade), sub: today.callsNotBilled > 0 ? "plus " + today.callsNotBilled + " the provider refused, not billed" : "admitted and settled" },
       { label: "Calls refused", value: String(today.callsRefused), sub: "money not spent" }
     ];
     if (hosted) {
@@ -499,7 +499,9 @@
       banner = document.createElement("div");
       banner.id = "paused-banner";
       banner.className = "empty";
-      banner.textContent = "The free tier is paused by its operator. Requests are being refused; nothing is being spent.";
+      banner.textContent = hosted.pauseReason
+        ? "The free tier paused itself: " + hosted.pauseReason + " Requests are being refused and nothing is being spent until the operator fixes it."
+        : "The free tier is paused by its operator. Requests are being refused; nothing is being spent.";
       document.querySelector("header").insertAdjacentElement("afterend", banner);
     } else if (!hosted.paused && banner) {
       banner.remove();

@@ -1,5 +1,5 @@
 import { ReservationLedger } from "./ledger.js";
-import type { Admission, AdmissionRefusalReason, GovernorEventName, GovernorSnapshot, PriceEntry, Reservation, ReservationRequest } from "./types.js";
+import type { Admission, AdmissionRefusalReason, CostSource, GovernorEventName, GovernorSnapshot, PriceEntry, Reservation, ReservationRequest } from "./types.js";
 
 export interface GovernorConfig {
   budgetUsd: number;
@@ -130,6 +130,28 @@ export class BudgetGovernor {
     });
   }
 
+  /**
+   * Close a reservation with nothing spent, because the provider refused the
+   * call before running it. Not a commit: committed totals do not move, and
+   * the event is tagged not_billed, never exact or estimated. A late signal
+   * is refused (false) but does not quarantine -- no money is in question.
+   */
+  async releaseUnbilled(attemptId: string, reason: string, nowMs = Date.now()): Promise<boolean> {
+    return this.atomic(async () => {
+      this.expireUnlocked(nowMs);
+      const reservation = this.active.get(attemptId);
+      if (!reservation) {
+        this.record("LATE_RESULT_REJECTED", this.resolved.get(attemptId)?.reservation ?? null, 0, null, { attempt_id: attemptId, reason, cost_source: "not_billed", admissions_quarantined: false });
+        return false;
+      }
+      reservation.state = "released";
+      this.reservedTotal = round(this.reservedTotal - reservation.amountUsd);
+      this.retire(reservation, nowMs);
+      this.record("RESERVATION_RELEASED", reservation, 0, "not_billed", { cost_source: "not_billed", reason, released_amount_usd: reservation.amountUsd });
+      return true;
+    });
+  }
+
   async expire(nowMs = Date.now()): Promise<void> { await this.atomic(async () => this.expireUnlocked(nowMs)); }
 
   assertStepFitsBudget(input: { model: string; inputTokens: number; maxTokens: number }): void {
@@ -226,7 +248,7 @@ export class BudgetGovernor {
     return { admitted: false, reason };
   }
 
-  private record(event: GovernorEventName, reservation: Reservation | null, amount: number | null, costSource: "exact" | "estimated" | null, raw: Record<string, unknown>): void {
+  private record(event: GovernorEventName, reservation: Reservation | null, amount: number | null, costSource: CostSource | null, raw: Record<string, unknown>): void {
     this.ledger.append({
       event,
       attempt_id: reservation?.attemptId ?? null,

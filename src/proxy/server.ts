@@ -164,9 +164,9 @@ export class SentinelProxy {
 
   private async commitEstimatedAndPersist(reservation: Reservation, reason: string, agent: string, streaming: boolean, outputTokens?: number): Promise<void> {
     // commitEstimated reports only whether it was accepted, not the dollar
-    // amount it computed -- governor.ts is frozen, so the amount is recovered
-    // from the public snapshot's own before/after delta rather than
-    // re-deriving the governor's private estimation formula out here.
+    // amount it computed, so the amount is recovered from the snapshot's own
+    // before/after delta rather than re-deriving the governor's private
+    // estimation formula out here.
     const before = this.governor.snapshot().committedEstimated;
     const accepted = await this.governor.commitEstimated(reservation.attemptId, reason, outputTokens);
     const after = this.governor.snapshot().committedEstimated;
@@ -175,8 +175,14 @@ export class SentinelProxy {
     if (accepted) this.recordSettled(reservation, agent, round(after - before), "estimated", streaming);
   }
 
+  /** The provider refused before running it: nothing spent, nothing added to today's total. */
+  private async releaseUnbilledAndRecord(reservation: Reservation, reason: string, agent: string, streaming: boolean): Promise<void> {
+    const accepted = await this.governor.releaseUnbilled(reservation.attemptId, reason);
+    if (accepted) this.recordSettled(reservation, agent, 0, "not_billed", streaming);
+  }
+
   /** The one place a settled (admitted and resolved) call becomes a ledger row. */
-  private recordSettled(reservation: Reservation, agent: string, costUsd: number, costSource: "exact" | "estimated", streaming: boolean): void {
+  private recordSettled(reservation: Reservation, agent: string, costUsd: number, costSource: "exact" | "estimated" | "not_billed", streaming: boolean): void {
     this.callLedger.record({
       attempt_id: reservation.attemptId,
       agent,
@@ -394,7 +400,8 @@ export class SentinelProxy {
       },
       sink: {
         exact: (costUsd, isStream) => this.commitExactAndPersist(reservation, costUsd, agent, isStream),
-        estimated: (reason, isStream, outputTokens) => this.commitEstimatedAndPersist(reservation, reason, agent, isStream, outputTokens)
+        estimated: (reason, isStream, outputTokens) => this.commitEstimatedAndPersist(reservation, reason, agent, isStream, outputTokens),
+        notBilled: (reason, isStream) => this.releaseUnbilledAndRecord(reservation, reason, agent, isStream)
       }
     });
   }

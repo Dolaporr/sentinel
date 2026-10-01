@@ -190,6 +190,28 @@ function testLedgerBoundKeepsExactCounts(): void {
   assert.equal(unbounded.all().length, 300, "a mission ledger still keeps every event by default");
 }
 
+async function testReleaseUnbilledIsNotACommit(): Promise<void> {
+  const ledger = new ReservationLedger();
+  const governor = retentionGovernor(1_000, ledger);
+  assert.ok((await governor.reserve(step("rejected", 0))).admitted);
+  assert.ok(governor.snapshot().reservedTotal > 0);
+  assert.equal(await governor.releaseUnbilled("rejected", "upstream_status:401", 1), true);
+  const snap = governor.snapshot();
+  assert.equal(snap.reservedTotal, 0, "the hold is released");
+  assert.equal(snap.committedExact, 0, "nothing is committed as exact");
+  assert.equal(snap.committedEstimated, 0, "and nothing as estimated");
+  assert.equal(snap.quarantined, false);
+  const event = ledger.all().find((e) => e.event === "RESERVATION_RELEASED");
+  assert.equal(event?.cost_source, "not_billed", "tagged distinctly from exact and estimated");
+  assert.equal(event?.amount_usd, 0);
+  assert.equal(ledger.count("COST_COMMITTED"), 0, "a release is not a cost commit");
+  assert.equal(await governor.commitExact("rejected", 0.01, 2), false, "a released id cannot be committed afterwards");
+  const governor2 = retentionGovernor(1_000);
+  assert.equal(await governor2.releaseUnbilled("never-reserved", "upstream_status:401", 0), false);
+  assert.equal(governor2.snapshot().quarantined, false, "a stray release involves no money, so it does not quarantine");
+}
+
+await testReleaseUnbilledIsNotACommit();
 await testResolvedReservationsAreBounded();
 await testDuplicateRefusedInsideRetention();
 await testLateResultAfterPruneStillQuarantines();

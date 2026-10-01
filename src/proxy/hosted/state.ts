@@ -31,6 +31,12 @@ export interface HostedConfig {
   requestsPerMinute: number;
   /** When true, every user request is refused. Reversible, unlike revoking. */
   paused: boolean;
+  /**
+   * Pause automatically after this many upstream 401/402s in a row: the
+   * operator's key is rejected or unfunded, so every request would fail the
+   * same way until a human fixes it.
+   */
+  operatorFaultPauseAfter: number;
 }
 
 export interface InviteRecord {
@@ -62,6 +68,8 @@ export interface HostedState {
   invites: InviteRecord[];
   tokens: TokenRecord[];
   spend: SpendDay;
+  /** Why the service is paused, when it paused itself. Null for a manual pause. */
+  pausedReason?: string | null;
 }
 
 export class HostedStateError extends Error {}
@@ -73,6 +81,7 @@ export function validateConfig(config: HostedConfig): string | null {
   if (!positive(config.requestsPerMinute) || !Number.isInteger(config.requestsPerMinute)) return "requestsPerMinute must be a positive integer";
   if (!Array.isArray(config.modelAllowlist) || config.modelAllowlist.some((m) => typeof m !== "string" || !m)) return "modelAllowlist must be a list of model ids";
   if (typeof config.paused !== "boolean") return "paused must be true or false";
+  if (!positive(config.operatorFaultPauseAfter) || !Number.isInteger(config.operatorFaultPauseAfter)) return "operatorFaultPauseAfter must be a positive integer";
   return null;
 }
 
@@ -87,6 +96,9 @@ export class HostedStateStore {
       } catch (error) {
         throw new HostedStateError(`State file ${filePath} exists but is not valid JSON (${error instanceof Error ? error.message : String(error)}). Refusing to start: replacing it would un-revoke every token and reset every cap. Fix or move it aside deliberately.`);
       }
+      // Settings added after a state file was written take their seed value;
+      // every setting the file already has keeps its stored value.
+      if (parsed?.version === 1) parsed.config = { ...seedConfig, ...parsed.config };
       const problem = parsed?.version !== 1 ? "unknown version" : validateConfig(parsed.config);
       if (problem) throw new HostedStateError(`State file ${filePath} is not usable: ${problem}. Refusing to start.`);
       this.state = parsed;
@@ -105,8 +117,18 @@ export class HostedStateStore {
     const problem = validateConfig(next);
     if (problem) return { ok: false, error: problem };
     this.state.config = next;
+    if (!next.paused) this.state.pausedReason = null;
     this.save();
     return { ok: true, config: next };
+  }
+
+  get pausedReason(): string | null { return this.state.pausedReason ?? null; }
+
+  /** reason is null for an operator's own pause, and says what happened for an automatic one. */
+  setPaused(paused: boolean, reason: string | null = null): void {
+    this.state.config = { ...this.state.config, paused };
+    this.state.pausedReason = paused ? reason : null;
+    this.save();
   }
 
   /** Today's spend, rolled to a fresh day at 00:00 UTC. */

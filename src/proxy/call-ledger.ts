@@ -29,7 +29,8 @@ export interface CallLedgerEntry {
   admitted: boolean;
   /** Set only when admitted and settled; null for a refusal or a still-open call. */
   cost_usd: number | null;
-  cost_source: "exact" | "estimated" | null;
+  /** not_billed: admitted, but the provider refused before running it (cost_usd 0). */
+  cost_source: "exact" | "estimated" | "not_billed" | null;
   /** Set only when !admitted. AdmissionRefusalReason, or a proxy-level refusal code. */
   refusal_reason: string | null;
   /** The worst case reserved (admitted) or that would have been reserved (refused). Null when unpriced. */
@@ -99,6 +100,8 @@ export interface TodaySummary {
   estimatedUsd: number;
   callsMade: number;
   callsRefused: number;
+  /** Admitted, but the provider refused before running them: no spend, not "calls made". */
+  callsNotBilled: number;
 }
 
 /** Only settled (admitted, cost known) calls count toward "calls made" and spend here. */
@@ -107,14 +110,16 @@ export function summarizeToday(entries: readonly CallLedgerEntry[], budgetUsd: n
   let estimatedUsd = 0;
   let callsMade = 0;
   let callsRefused = 0;
+  let callsNotBilled = 0;
   for (const entry of entries) {
     if (!entry.admitted) { callsRefused++; continue; }
+    if (entry.cost_source === "not_billed") { callsNotBilled++; continue; }
     if (entry.cost_usd === null) continue; // admitted but not yet settled
     callsMade++;
     if (entry.cost_source === "exact") exactUsd = round(exactUsd + entry.cost_usd);
     else estimatedUsd = round(estimatedUsd + entry.cost_usd);
   }
-  return { spentUsd: round(exactUsd + estimatedUsd), budgetUsd, exactUsd, estimatedUsd, callsMade, callsRefused };
+  return { spentUsd: round(exactUsd + estimatedUsd), budgetUsd, exactUsd, estimatedUsd, callsMade, callsRefused, callsNotBilled };
 }
 
 export interface BreakdownRow {
@@ -130,7 +135,7 @@ function aggregateBy(entries: readonly CallLedgerEntry[], keyOf: (entry: CallLed
   const totals = new Map<string, { calls: number; spendUsd: number }>();
   let grandTotal = 0;
   for (const entry of entries) {
-    if (!entry.admitted || entry.cost_usd === null) continue;
+    if (!entry.admitted || entry.cost_usd === null || entry.cost_source === "not_billed") continue;
     const key = keyOf(entry);
     const row = totals.get(key) ?? { calls: 0, spendUsd: 0 };
     row.calls += 1;
@@ -189,7 +194,7 @@ export interface MostExpensiveCall {
 export function mostExpensiveCall(entries: readonly CallLedgerEntry[]): MostExpensiveCall | null {
   let best: MostExpensiveCall | null = null;
   for (const entry of entries) {
-    if (!entry.admitted || entry.cost_usd === null) continue;
+    if (!entry.admitted || entry.cost_usd === null || entry.cost_source === "not_billed") continue;
     if (!best || entry.cost_usd > best.costUsd) {
       best = { ts: entry.ts, agent: entry.agent, model: entry.model, costUsd: entry.cost_usd };
     }
@@ -202,7 +207,7 @@ export interface SparklinePoint { ts: string; cumulativeUsd: number }
 /** Cumulative spend over the day, in call order -- the one chart §4 allows. */
 export function spendSparkline(entries: readonly CallLedgerEntry[]): SparklinePoint[] {
   const settled = entries
-    .filter((entry) => entry.admitted && entry.cost_usd !== null)
+    .filter((entry) => entry.admitted && entry.cost_usd !== null && entry.cost_source !== "not_billed")
     .sort((a, b) => (a.ts < b.ts ? -1 : a.ts > b.ts ? 1 : 0));
   let running = 0;
   return settled.map((entry) => {
@@ -231,6 +236,8 @@ export interface LedgerViewModel {
     models: string[];
     resetsAt: string;
     paused: boolean;
+    /** Set when the service paused itself rather than being paused by the operator. */
+    pauseReason?: string | null;
   };
 }
 

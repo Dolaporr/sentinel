@@ -102,6 +102,14 @@ rather than duplicated. **`exact` is never returned for a number Sentinel
 calculated itself.** The banner and `/healthz` (`cost_reporting`) say plainly,
 per provider, which one you are looking at.
 
+A third label exists for one case only: **`not_billed`**, at $0, when the
+provider answers 401 or 402 — credentials rejected or unfunded, refused before
+any inference ran. It is not `exact` (no provider reported $0; Sentinel inferred
+it from the refusal) and not `estimated` (an estimate for a call that never ran
+would be wrong, not conservative). It commits nothing to today's total, appears
+as `x-sentinel-cost-source: not_billed`, and the ledger page counts it apart from
+calls made. Every other upstream error is still settled as an estimate.
+
 Only one provider runs per proxy instance. There is no cross-provider
 model-prefix routing in a single process — if you need two providers at once,
 run two instances on two ports. Routing between providers is a real design

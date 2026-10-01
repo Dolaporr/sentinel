@@ -134,7 +134,7 @@ function gatewayConfig(overrides: Partial<HostedServerConfig> = {}): HostedServe
     apiKey: UPSTREAM_KEY, adminToken: ADMIN,
     prices, priceSource: "static", priceVerifiedAt: "test",
     statePath: join(DATA, "hosted-state.json"), callLedgerPath: join(DATA, "calls.jsonl"),
-    seedConfig: { poolDailyCapUsd: 1, tokenDailyCapUsd: 0.01, modelAllowlist: [MINI], requestsPerMinute: 1000, paused: false },
+    seedConfig: { poolDailyCapUsd: 1, tokenDailyCapUsd: 0.01, modelAllowlist: [MINI], requestsPerMinute: 1000, paused: false, operatorFaultPauseAfter: 3 },
     reservationTtlMs: 30_000, reservationSafetyMultiplier: 1.25, defaultMaxTokens: 1024,
     clock, ...overrides
   };
@@ -317,6 +317,36 @@ async function endToEnd() {
   check("upstream 401 on the operator's key -> 503 that says it is Sentinel's side", operator.status === 503 && operator.json?.error?.code === "sentinel_upstream_credentials" && /not yours/.test(operator.json.error.message));
   check("the upstream's own 401 body is not passed to the caller", !operator.text.includes("Incognito"));
   check("a caller-side upstream error (400) still passes through", errored.status === 400);
+
+  console.log("\n12b. operator-key failures: $0 not_billed, then an automatic pause");
+  const view12 = (await call("/ledger.json")).json;
+  const lastRow = gw.callLedger.readToday(clock()).at(-1)!;
+  check("the 401 is recorded at $0 tagged not_billed", lastRow.cost_source === "not_billed" && lastRow.cost_usd === 0 && lastRow.admitted === true);
+  check("the public ledger counts it apart from calls made", view12.today.callsNotBilled >= 1);
+  check("the 401 left no pool hold", gw.pool.reservedUsd() === 0);
+  const spentBefore = gw.tenants.spentTodayUsd(handleA);
+  const poolBefore = gw.pool.committedUsd();
+  check("a success resets the streak", (await chat(tokA)).status === 200);
+  const spentAfterSuccess = gw.tenants.spentTodayUsd(handleA);
+  await chat(tokA, { user: "operator-auth" });
+  const second = await chat(tokA, { user: "operator-auth" });
+  check("two faults in a row do not pause", !gw.store.config.paused && second.status === 503 && !/paused itself/.test(second.json.error.message));
+  check("operator faults charge neither the token nor the pool", gw.tenants.spentTodayUsd(handleA) === spentAfterSuccess && gw.pool.committedUsd() === round(poolBefore + (spentAfterSuccess - spentBefore)));
+  const third = await chat(tokA, { user: "operator-auth" });
+  check("the third in a row pauses the service", gw.store.config.paused === true);
+  check("the response that tripped it says so", /paused itself/.test(third.json.error.message), third.json?.error?.message);
+  const h3 = stubHits;
+  const autoPaused = await chat(tokA);
+  check("while auto-paused: 503 that says why, and that it is not the caller's fault", autoPaused.status === 503 && autoPaused.json.error.code === "sentinel_paused" && /paused itself: the upstream provider rejected the operator's key 3 times in a row \(last: HTTP 401\)/.test(autoPaused.json.error.message) && /not yours/.test(autoPaused.json.error.message), autoPaused.json?.error?.message);
+  check("nothing reached upstream while auto-paused", stubHits === h3);
+  check("healthz carries the reason", /3 times in a row/.test((await call("/healthz")).json.paused_reason ?? ""));
+  check("the public ledger carries the reason", /3 times in a row/.test((await call("/ledger.json")).json.hosted.pauseReason ?? ""));
+  await admin("/admin/resume", {});
+  check("resume clears the pause and its reason", !gw.store.config.paused && gw.store.pausedReason === null);
+  await chat(tokA, { user: "operator-auth" }); // straight after resume, no success in between
+  check("the streak restarted from zero on resume (one fault does not re-pause)", !gw.store.config.paused);
+  check("served again after resume", (await chat(tokA)).status === 200);
+  check("operatorFaultPauseAfter is adjustable at runtime", (await admin("/admin/config", { operatorFaultPauseAfter: 5 }, "PATCH")).json.config.operatorFaultPauseAfter === 5);
 
   console.log("\n13. state, restart, and revoke-all");
   const health = await call("/healthz");

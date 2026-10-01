@@ -88,6 +88,12 @@ export class HostedGateway {
    */
   private storageFault: string | null = null;
   private attemptSeq = 0;
+  /**
+   * Upstream 401/402s in a row. Any other upstream answer resets it (the key
+   * got far enough to be told something else); a network failure, which
+   * says nothing about the key, leaves it alone.
+   */
+  private operatorFaultStreak = 0;
 
   constructor(private readonly config: HostedServerConfig) {
     this.clock = config.clock ?? (() => new Date());
@@ -139,7 +145,10 @@ export class HostedGateway {
     // Kill switch and storage fault come before authentication: when either is
     // on, nothing is served to anyone, and saying so leaks nothing.
     if (config.paused) {
-      sendJson(res, 503, err("sentinel_paused", "Sentinel's free tier is paused by its operator. Nothing was sent upstream and nothing was charged.", "service_unavailable"));
+      const auto = this.store.pausedReason;
+      sendJson(res, 503, err("sentinel_paused", auto
+        ? `Sentinel's free tier paused itself: ${auto} This is on Sentinel's side, not yours. Nothing was sent upstream and nothing was charged; it stays paused until the operator fixes the key and resumes it.`
+        : "Sentinel's free tier is paused by its operator. Nothing was sent upstream and nothing was charged.", "service_unavailable"));
       return;
     }
     if (this.storageFault) {
@@ -279,24 +288,38 @@ export class HostedGateway {
         // for a caller who has never seen that key.
         replaceUpstreamError: (status) => {
           if (status !== 401 && status !== 402) return null;
-          console.error(`[OPERATOR] upstream returned ${status} for the operator's key -- every request will fail until it is fixed or funded`);
+          const pausedNow = this.store.config.paused ? " Sentinel has now paused itself until the operator fixes it." : "";
           return {
             status: 503,
-            body: err("sentinel_upstream_credentials", "Sentinel's upstream provider rejected the operator's credentials or balance. This is on Sentinel's side, not yours; nothing was generated.", "service_unavailable")
+            body: err("sentinel_upstream_credentials", `Sentinel's upstream provider rejected the operator's credentials or balance. This is on Sentinel's side, not yours; nothing was generated and nothing was charged.${pausedNow}`, "service_unavailable")
           };
         },
         sink: {
           exact: async (costUsd, isStream) => {
+            this.operatorFaultStreak = 0;
             await governor.commitExact(attemptId, costUsd);
             // Recorded whether or not the governor accepted it as on time:
             // the gateway billed it either way, and the pool must know.
             settle(costUsd, "exact", isStream);
           },
           estimated: async (reason, isStream, outputTokens) => {
+            if (!reason.startsWith("dispatch_failed") && reason !== "reservation_deadline_exceeded") this.operatorFaultStreak = 0;
             const before = governor.snapshot().committedEstimated;
             const accepted = await governor.commitEstimated(attemptId, reason, outputTokens);
             const amount = accepted ? Math.max(0, governor.snapshot().committedEstimated - before) : reservation.amountUsd;
             settle(Math.round(amount * 1e9) / 1e9, "estimated", isStream);
+          },
+          notBilled: async (reason, isStream) => {
+            // Nothing ran upstream: the reservation closes at $0, the pool hold
+            // is released rather than spent, and neither ceiling moves.
+            await governor.releaseUnbilled(attemptId, reason);
+            this.pool.release(attemptId);
+            poolSettled = true;
+            this.callLedger.record({
+              attempt_id: attemptId, agent: handle, model, admitted: true, cost_usd: 0, cost_source: "not_billed",
+              refusal_reason: null, worst_case_usd: reservation.amountUsd, budget_remaining_usd: this.tokenRemaining(handle), streaming: isStream
+            });
+            this.noteOperatorFault(reason);
           }
         }
       });
@@ -304,6 +327,17 @@ export class HostedGateway {
       // Every path out releases the pool hold exactly once: refused, settled,
       // or something threw in between.
       if (!poolSettled) this.pool.release(attemptId);
+    }
+  }
+
+  private noteOperatorFault(reason: string): void {
+    this.operatorFaultStreak++;
+    const limit = this.store.config.operatorFaultPauseAfter;
+    console.error(`[OPERATOR] upstream rejected the operator's key (${reason}), ${this.operatorFaultStreak} in a row`);
+    if (this.operatorFaultStreak >= limit && !this.store.config.paused) {
+      const status = reason.replace("upstream_status:", "HTTP ");
+      this.store.setPaused(true, `the upstream provider rejected the operator's key ${this.operatorFaultStreak} times in a row (last: ${status}).`);
+      console.error(`[OPERATOR] PAUSED automatically after ${this.operatorFaultStreak} consecutive operator-key failures. Fix the key, then POST /admin/resume.`);
     }
   }
 
@@ -415,14 +449,15 @@ export class HostedGateway {
     }
     if (method === "POST" && (url === "/admin/pause" || url === "/admin/resume")) {
       const paused = url === "/admin/pause";
-      this.store.updateConfig({ paused });
+      this.store.setPaused(paused);
+      if (!paused) this.operatorFaultStreak = 0;
       console.log(`[admin] ${paused ? "PAUSED - all user requests refused" : "resumed"}`);
       sendJson(res, 200, { paused });
       return;
     }
     if (url === "/admin/config" && (method === "GET" || method === "PATCH")) {
       if (method === "PATCH") {
-        const allowed: Array<keyof HostedConfig> = ["poolDailyCapUsd", "tokenDailyCapUsd", "modelAllowlist", "requestsPerMinute", "paused"];
+        const allowed: Array<keyof HostedConfig> = ["poolDailyCapUsd", "tokenDailyCapUsd", "modelAllowlist", "requestsPerMinute", "paused", "operatorFaultPauseAfter"];
         const unknown = Object.keys(body).filter((k) => !allowed.includes(k as keyof HostedConfig));
         if (unknown.length) { sendJson(res, 400, err("invalid_config", `Unknown config field(s): ${unknown.join(", ")}.`)); return; }
         const result = this.store.updateConfig(body as Partial<HostedConfig>);
@@ -457,7 +492,8 @@ export class HostedGateway {
         tokenDailyCapUsd: config.tokenDailyCapUsd,
         models: this.servedModels(),
         resetsAt: nextUtcMidnight(now).toISOString(),
-        paused: config.paused
+        paused: config.paused,
+        pauseReason: this.store.pausedReason
       }
     };
   }
@@ -466,6 +502,7 @@ export class HostedGateway {
     const config = this.store.config;
     return {
       status: this.storageFault ? "storage_fault" : config.paused ? "paused" : this.pool.exhausted() ? "pool_exhausted" : "ok",
+      paused_reason: this.store.pausedReason,
       provider: this.config.provider.name,
       cost_reporting: this.config.provider.costReporting,
       key_configured: true,

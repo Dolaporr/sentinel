@@ -47,7 +47,8 @@ export async function main(): Promise<void> {
     tokenDailyCapUsd: num("SENTINEL_HOSTED_TOKEN_DAILY_USD", 0.25),
     modelAllowlist: (process.env.SENTINEL_HOSTED_MODELS ?? "openai/gpt-4.1-mini").split(",").map((s) => s.trim()).filter(Boolean),
     requestsPerMinute: Math.floor(num("SENTINEL_HOSTED_RPM", 20)),
-    paused: false
+    paused: false,
+    operatorFaultPauseAfter: Math.floor(num("SENTINEL_HOSTED_OPERATOR_FAULT_PAUSE_AFTER", 3))
   };
 
   const table = await resolvePriceTable({

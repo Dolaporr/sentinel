@@ -79,6 +79,16 @@ change.
     codes so none can mint a fresh token a moment later;
   - kill switch — `POST /admin/pause` / `POST /admin/resume`: every user request
     refused with 503, reversible.
+- **Automatic pause on a broken operator key.** After `operatorFaultPauseAfter`
+  (default 3) upstream 401/402s in a row — the operator's key rejected or out of
+  credit — the service pauses itself, persists why, and every caller gets one
+  line: *"Sentinel's free tier paused itself: the upstream provider rejected the
+  operator's key 3 times in a row (last: HTTP 401). This is on Sentinel's side,
+  not yours…"*. Any other upstream answer resets the count; a network failure,
+  which says nothing about the key, leaves it alone. `POST /admin/resume` clears
+  the pause and the count. Each of those failed calls is recorded at **$0,
+  `cost_source: "not_billed"`** — no inference ran, so an estimate would be
+  wrong, not conservative — and charges neither the caller's cap nor the pool.
 - **No prompt content, anywhere.** The ledger records token handle, model,
   token-derived cost, outcome, timing. `hosted:verify` sends a marker string in a
   prompt and asserts it appears in no log line and no file, with a control proving
@@ -116,7 +126,9 @@ places: that process's memory and the outgoing `Authorization` header.
   bodies, error bodies, and streams — including a key split across chunk
   boundaries, which a per-chunk replace would miss. Upstream 401/402 (the
   operator's key rejected or unfunded) are replaced with a Sentinel 503 that
-  says the fault is on our side.
+  says the fault is on our side — Orbio's own body for this tells the reader to
+  set up client-side encryption, which is meaningless to a caller who has never
+  seen the key.
 - **Logs.** Upstream error bodies are not logged at all (they can quote the
   request back); unhandled errors log only their type.
 - **Disk.** The state file holds hashes; the ledger holds metadata.
@@ -150,7 +162,8 @@ to start on a corrupt state file rather than replacing it with defaults.
 
 First-boot seeds (optional): `SENTINEL_HOSTED_POOL_DAILY_USD` (5),
 `SENTINEL_HOSTED_TOKEN_DAILY_USD` (0.25), `SENTINEL_HOSTED_MODELS`
-(`openai/gpt-4.1-mini`), `SENTINEL_HOSTED_RPM` (20). `PORT` is read from Railway.
+(`openai/gpt-4.1-mini`), `SENTINEL_HOSTED_RPM` (20),
+`SENTINEL_HOSTED_OPERATOR_FAULT_PAUSE_AFTER` (3). `PORT` is read from Railway.
 
 ## Operator runbook
 
@@ -164,6 +177,7 @@ curl -X POST $H/admin/pause -H "$A"                           # kill switch
 curl -X POST $H/admin/resume -H "$A"
 curl -X POST $H/admin/revoke-all -H "$A"                      # kill every token
 curl -X PATCH $H/admin/config -H "$A" -d '{"poolDailyCapUsd": 10, "tokenDailyCapUsd": 0.5}'
+curl -X PATCH $H/admin/config -H "$A" -d '{"operatorFaultPauseAfter": 5}'   # auto-pause threshold
 ```
 
 A user redeems with:
@@ -181,13 +195,16 @@ curl -X POST $H/v1/redeem -d '{"code": "SNT-XXXX-XXXX-XXXX-XXXX"}'
 - **A quarantined token stays quarantined until restart**, including across a
   UTC midnight: quarantine means the price table was wrong for a call, and a new
   day does not fix that.
-- **An upstream failure still costs the caller an estimate.** Every admitted
-  request that ends in an upstream error is settled as an estimated input-leg
-  cost, never silently released — the existing rule, because Sentinel cannot see
-  whether the gateway billed. Hosted, that means an operator-side failure (a
-  revoked or unfunded key) puts a small phantom estimate on each caller's cap and
-  the public ledger for every request until it is fixed. See the open question
-  in the report.
+- **Upstream errors other than 401/402 still cost the caller an estimate.** A
+  400, 429 or 5xx is settled as an estimated input-leg cost, never silently
+  released, because there Sentinel cannot see whether the gateway billed. Only a
+  401/402 — refused before any inference ran — is recorded as $0 not_billed.
+- **A caller can contribute to an automatic pause, in one narrow case.** A 401
+  is never caller-triggerable (the credentials are ours). A 402 can be, if the
+  operator's remaining balance is below one allowed request's cost: three such
+  requests in a row would pause the service. At that point the balance cannot
+  serve normal traffic either, so the pause is the right outcome, but it is a
+  way for one caller to stop everyone's free tier.
 - **Unredeemed invite codes never expire** unless voided by revoke-all.
 - **Not yet run on Railway, and not yet run against a real upstream with a real
   key through the hosted path.** Every behaviour above is proven against the
