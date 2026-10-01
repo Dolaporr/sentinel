@@ -149,7 +149,9 @@ redaction switched off fails it.
 
 ## Deploying on Railway
 
-`railway.json` sets the start command, `/healthz` as the health check, and **one
+`railway.json` sets the start command, `/healthz` as the health check (GET or
+HEAD, 200 while serving — paused included, so a pause never makes the platform
+restart it), and **one
 replica** — the pool and rate limiter hold in-flight state in memory, so two
 replicas would each admit against the same pool.
 
@@ -165,6 +167,10 @@ There is no default data directory on purpose. Without a volume, a redeploy
 erases tokens, revocations and today's spend — un-revoking everyone and handing
 every token a fresh budget. Startup refuses to run until it is set, and refuses
 to start on a corrupt state file rather than replacing it with defaults.
+
+The server listens on `PORT` (Railway's), else `SENTINEL_HOSTED_PORT`, else 8080, on
+IPv6 and IPv4 together, falling back to IPv4 alone where IPv6 is off. A stop
+signal and any fatal error after startup are logged, so an exit always says why.
 
 First-boot seeds (optional): `SENTINEL_HOSTED_POOL_DAILY_USD` (5),
 `SENTINEL_HOSTED_TOKEN_DAILY_USD` (0.25), `SENTINEL_HOSTED_MODELS`
