@@ -24,6 +24,10 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   `fix/hosted-lifecycle` is untested (the build sandbox has IPv6 disabled; only the IPv4
   fallback ran). That authorisation covered those two merges only and the rule stands
   otherwise.
+  Update, 2026-10-01: the dual-stack path is confirmed in production. On Railway the boot
+  banner printed "(IPv6 and IPv4)", which is only printed when the listen on "::" succeeds
+  with no IPv4 fallback (observed by the scope owner in the Railway logs), and the service
+  answers through its public domain (/healthz, /v1/models and / all 200, checked by Claude Code).
 - `src/governor/` was frozen for the Build Week submission. By scope-owner decision on
   2026-10-01 that freeze is lifted: Claude Code may change the governor and its ledger
   (first change: bounded retention of resolved reservations and in-memory events).

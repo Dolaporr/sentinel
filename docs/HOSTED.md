@@ -177,7 +177,8 @@ every token a fresh budget. Startup refuses to run until it is set, and refuses
 to start on a corrupt state file rather than replacing it with defaults.
 
 The server listens on `PORT` (Railway's), else `SENTINEL_HOSTED_PORT`, else 8080, on
-IPv6 and IPv4 together, falling back to IPv4 alone where IPv6 is off. A stop
+IPv6 and IPv4 together, falling back to IPv4 alone where IPv6 is off. (Confirmed on
+Railway, 2026-10-01: the boot banner reports "IPv6 and IPv4", i.e. no fallback.) A stop
 signal and any fatal error after startup are logged, so an exit always says why.
 
 First-boot seeds (optional): `SENTINEL_HOSTED_POOL_DAILY_USD` (5),
@@ -255,8 +256,11 @@ Without `--url`, `npm run hosted:verify` is the offline suite against a stub.
   request's cost. One cannot (see the two-token rule above). At that balance
   normal traffic is failing anyway, so the pause is the right outcome.
 - **Unredeemed invite codes never expire** unless voided by revoke-all.
-- **Not yet run on Railway, and not yet run against a real upstream with a real
-  key through the hosted path.** Every behaviour above is proven against the
-  stub; the boot, invite, redeem, models and refusal paths were also exercised
-  against Orbio's live price list. §7's done-bar — a real agent, a real cheap
-  call, a refusal, the kill switch — is for someone other than its author to run.
+- **Running on Railway since 2026-10-01, but not yet run against a real
+  upstream with a real key through the hosted path.** The deployment boots
+  dual-stack and answers `/healthz` (GET and HEAD), `/v1/models` and `/`
+  through its public domain. Every other behaviour above is proven against the
+  stub; the live smoke test (`hosted:verify --url`), which makes the one real
+  call, has not been run against it yet. §7's done-bar — a real agent, a real
+  cheap call, a refusal, the kill switch — is for someone other than its
+  author to run.
