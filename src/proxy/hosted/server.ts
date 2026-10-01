@@ -133,7 +133,9 @@ export class HostedGateway {
     if (url.startsWith("/admin/") || url === "/admin") { await this.handleAdmin(req, res, url, method); return; }
     if (method === "GET" && url === "/") { this.servePage(res); return; }
     if (method === "GET" && url === "/ledger.json") { sendJson(res, 200, this.ledgerView()); return; }
-    if (method === "GET" && url === "/healthz") { sendJson(res, 200, this.health()); return; }
+    // HEAD too: some platform health checks probe with it, and Node sends the
+    // status and headers without the body.
+    if ((method === "GET" || method === "HEAD") && url === "/healthz") { sendJson(res, 200, this.health()); return; }
     if (method === "GET" && url === "/v1/models") {
       const served = Object.fromEntries(this.servedModels().map((id) => [id, this.config.prices[id]]));
       sendJson(res, 200, modelsBody(served, this.config.provider.name));
@@ -543,9 +545,22 @@ export class HostedGateway {
     });
     this.sweeper = setInterval(() => { void this.tenants.expireAll(); this.limiter.sweep(); }, 5_000);
     this.sweeper.unref();
-    server.listen(this.config.port, this.config.host, () => {
+    let host = this.config.host;
+    server.on("error", (error: NodeJS.ErrnoException) => {
+      // "::" listens on IPv6 and IPv4 together; a host with IPv6 switched off
+      // refuses it, and IPv4 alone is still a working service.
+      if (host === "::" && (error.code === "EAFNOSUPPORT" || error.code === "EADDRNOTAVAIL")) {
+        console.warn(`[hosted] IPv6 unavailable (${error.code}); listening on IPv4 only`);
+        host = "0.0.0.0";
+        server.listen(this.config.port, host);
+        return;
+      }
+      console.error(`[hosted] FATAL server error ${error.code ?? error.name}: ${error.message}`);
+      process.exit(1);
+    });
+    server.on("listening", () => {
       const config = this.store.config;
-      console.log(`Sentinel hosted listening on http://${this.config.host}:${this.config.port}`);
+      console.log(`Sentinel hosted listening on port ${this.config.port} (${host === "::" ? "IPv6 and IPv4" : host})`);
       console.log(`  provider          ${this.config.provider.name} (${this.config.provider.costReporting === "exact" ? "reports exact cost per call" : "cost is Sentinel's estimate"})`);
       console.log(`  upstream key      held in this process only (${this.config.provider.apiKeyEnvVar})`);
       console.log(`  shared pool       ${usd(config.poolDailyCapUsd)} per UTC day, ${usd(this.pool.committedUsd())} committed`);
@@ -555,7 +570,9 @@ export class HostedGateway {
       console.log(`  tokens            ${this.store.tokens().filter((t) => !t.revokedAt).length} active, ${this.store.tokens().filter((t) => t.revokedAt).length} revoked`);
       console.log(`  paused            ${config.paused}`);
       console.log(`  ledger            public at /, metadata only - never prompt or completion content`);
+      console.log(`  health check      GET or HEAD /healthz -> 200 while the process is serving`);
     });
+    server.listen(this.config.port, host);
     return server;
   }
 }

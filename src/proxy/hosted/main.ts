@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { RESERVATION_SAFETY_MULTIPLIER } from "../mission-constants.js";
 import { resolvePriceTable } from "../prices.js";
 import { resolveProvider } from "../providers/registry.js";
+import { redact } from "../dispatch.js";
 import { TOKEN_PREFIX } from "./secrets.js";
 import { HostedGateway } from "./server.js";
 import type { HostedConfig } from "./state.js";
@@ -60,7 +61,7 @@ export async function main(): Promise<void> {
 
   const gateway = new HostedGateway({
     port: num("PORT", num("SENTINEL_HOSTED_PORT", 8080)),
-    host: "0.0.0.0",
+    host: "::",
     provider,
     upstreamUrl: process.env.SENTINEL_HOSTED_UPSTREAM ?? provider.chatCompletionsUrl,
     apiKey,
@@ -88,5 +89,24 @@ export async function main(): Promise<void> {
   const unpriced = stored.modelAllowlist.filter((id) => !table.prices[id]);
   if (unpriced.length) console.warn(`[config] allowlisted but unpriced, will be refused: ${unpriced.join(", ")}`);
 
-  gateway.listen();
+  const server = gateway.listen();
+
+  // Until now an exit after startup left no trace: a platform stop (SIGTERM)
+  // and an uncaught error looked the same in the logs -- nothing. Each now
+  // says what happened. Messages pass through redact() so even an error that
+  // somehow carried the upstream key cannot print it.
+  const shutdown = (signal: NodeJS.Signals) => {
+    console.log(`[hosted] received ${signal} -- the platform or an operator asked this process to stop. Closing.`);
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 5_000).unref();
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
+  const fatal = (kind: string) => (error: unknown) => {
+    const detail = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    console.error(`[hosted] FATAL ${kind}: ${redact(detail, apiKey)}`);
+    process.exit(1);
+  };
+  process.on("uncaughtException", fatal("uncaught exception"));
+  process.on("unhandledRejection", fatal("unhandled promise rejection"));
 }
