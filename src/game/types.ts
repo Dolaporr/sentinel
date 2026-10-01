@@ -27,7 +27,8 @@ export type GameEventName =
   | "ROUND_FINISHED"
   | "PRIZE_ALLOCATION_PENDING"
   | "PRIZE_ALLOCATION_APPLYING"
-  | "PRIZE_ALLOCATION_GRANTED";
+  | "PRIZE_ALLOCATION_GRANTED"
+  | "PRIZE_ALLOCATION_RECONCILIATION_REQUIRED";
 
 export interface GameEvent {
   id: string;
@@ -62,9 +63,16 @@ export interface GameTransport {
   execute(input: { runId: string; seasonId: string; policy: GamePolicy }): Promise<GameExecutionResult>;
 }
 
+export interface HostedAllocationState {
+  lifetimeAllocationUsd: number;
+  lifetimeSpentUsd: number;
+  raw: JsonObject;
+}
+
 /** The hosted service owns this implementation; the game only requests an allocation. */
 export interface AllocationGateway {
-  grant(input: { playerId: string; amountUsd: number; reference: string }): Promise<{ lifetimeAllocationUsd: number; raw: JsonObject }>;
+  inspect(playerId: string): Promise<HostedAllocationState>;
+  setLifetimeAllocation(input: { playerId: string; lifetimeAllocationUsd: number; reference: string }): Promise<{ lifetimeAllocationUsd: number; raw: JsonObject }>;
 }
 
 export interface RoundOutcome {

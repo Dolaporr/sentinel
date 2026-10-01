@@ -20,12 +20,34 @@ assert.equal(outcome.prizePendingUsd, 0.1);
 assert.equal(store.snapshot(season).remainingUsd, 0.86, "settled spend and held prize reduce only the game pool");
 const board = publicGameLedger(store, season);
 assert.equal(JSON.stringify(board).includes("must never persist"), false, "prompt-like raw fields are stripped from public evidence");
-await runner.grantPrize(outcome.runId, { async grant() { return { lifetimeAllocationUsd: 0.1, raw: { status: "ok" } }; } });
+const allocations = new Map<string, number>([["player-1", 0], ["player-2", 0], ["player-3", 0]]);
+const allocationGateway = {
+  async inspect(playerId: string) { return { lifetimeAllocationUsd: allocations.get(playerId) ?? 0, lifetimeSpentUsd: 0, raw: { status: "ok" } }; },
+  async setLifetimeAllocation(input: { playerId: string; lifetimeAllocationUsd: number }) {
+    allocations.set(input.playerId, input.lifetimeAllocationUsd);
+    return { lifetimeAllocationUsd: input.lifetimeAllocationUsd, raw: { status: "ok" } };
+  }
+};
+await runner.grantPrize(outcome.runId, allocationGateway);
 assert.equal(store.snapshot(season).playerAwardsUsd["player-1"], 0.1);
 const second = await runner.run("player-1", policy);
 assert.equal(second.prizePendingUsd, 0.1, "the remaining personal allocation is reservable");
+await assert.rejects(() => runner.grantPrize(second.runId, {
+  ...allocationGateway,
+  async setLifetimeAllocation(input) { allocations.set(input.playerId, input.lifetimeAllocationUsd); throw new Error("process_died_after_patch"); }
+}));
+assert.equal(await runner.recoverPrize(second.runId, allocationGateway), "applied", "target allocation proves the prior PATCH landed");
 const capped = await runner.run("player-1", policy);
 assert.equal(capped.prizePendingUsd, 0, "pending prizes count toward the hard per-player ceiling");
+const retryable = await runner.run("player-2", policy);
+await assert.rejects(() => runner.grantPrize(retryable.runId, { ...allocationGateway, async setLifetimeAllocation() { throw new Error("process_died_before_patch"); } }));
+assert.equal(await runner.recoverPrize(retryable.runId, allocationGateway), "retried", "before allocation proves retrying is safe");
+const ambiguous = await runner.run("player-3", policy);
+await assert.rejects(() => runner.grantPrize(ambiguous.runId, {
+  ...allocationGateway,
+  async setLifetimeAllocation(input) { allocations.set(input.playerId, 0.37); throw new Error("operator_changed_allocation"); }
+}));
+assert.equal(await runner.recoverPrize(ambiguous.runId, allocationGateway), "needs_human", "a third allocation value is never retried blindly");
 await assert.rejects(() => runner.run("player-1", { ...policy, model: "unknown/model" }), /GAME_MODEL_REFUSED/);
 const failing = new GameRoundRunner(season, store, { async execute() { throw new Error("gateway_down"); } }, () => 0.05);
 const unbilled = await failing.run("player-2", policy);
@@ -41,7 +63,9 @@ const hosted = new HostedAllocationGateway(
     return new Response(JSON.stringify({ handle: "t-player", lifetime_allocation_usd: 0.1 }), { status: 200 });
   }
 );
-const granted = await hosted.grant({ playerId: "t-player", amountUsd: 0.1, reference: "run-1" });
+const inspected = await hosted.inspect("t-player");
+assert.equal(inspected.lifetimeAllocationUsd, 0);
+const granted = await hosted.setLifetimeAllocation({ playerId: "t-player", lifetimeAllocationUsd: 0.1, reference: "run-1" });
 assert.equal(granted.lifetimeAllocationUsd, 0.1);
 assert.deepEqual(requests.map((request) => request.method), ["GET", "PATCH"]);
 assert.equal(requests[1].body, '{"lifetimeAllocationUsd":0.1}', "real hosted route receives the new absolute allocation");

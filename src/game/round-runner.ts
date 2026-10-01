@@ -87,18 +87,56 @@ export class GameRoundRunner {
     if (!pending?.playerId || pending.amountUsd === null) throw new Error("No pending prize exists for this run.");
     const alreadyGranted = this.store.all(this.season.id).some((event) => event.event === "PRIZE_ALLOCATION_GRANTED" && event.runId === runId);
     if (alreadyGranted) throw new Error("Prize has already been granted.");
-    // The hosted route has no idempotency key. If the process dies after its
-    // PATCH succeeds but before our granted event lands, retrying could credit
-    // the same prize twice. Preserve the ambiguous attempt and demand a human
-    // reconciliation against /admin/tokens before anyone tries again.
     const applying = this.store.all(this.season.id).some((event) => event.event === "PRIZE_ALLOCATION_APPLYING" && event.runId === runId);
-    if (applying) throw new Error("Prize allocation is ambiguous after a prior apply attempt; reconcile against the hosted token before retrying.");
+    if (applying) throw new Error("Prize allocation already started; call recoverPrize before retrying.");
+    const before = await allocations.inspect(pending.playerId);
+    const target = round(before.lifetimeAllocationUsd + pending.amountUsd);
     this.store.append(gameEvent("PRIZE_ALLOCATION_APPLYING", {
-      seasonId: this.season.id, runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason: "admin_allocation_requested", policyHash: pending.policyHash, raw: {}
+      seasonId: this.season.id, runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason: "admin_allocation_requested", policyHash: pending.policyHash,
+      raw: { before_lifetime_allocation_usd: before.lifetimeAllocationUsd, target_lifetime_allocation_usd: target }
     }));
-    const response = await allocations.grant({ playerId: pending.playerId, amountUsd: pending.amountUsd, reference: runId });
+    const response = await allocations.setLifetimeAllocation({ playerId: pending.playerId, lifetimeAllocationUsd: target, reference: runId });
+    this.recordGranted(pending, response, "manual_allocation");
+  }
+
+  /**
+   * State comparison substitutes for an upstream idempotency key at this small,
+   * manually-operated scale. We never retry blind: target proves application,
+   * before proves a retry is safe, any third state needs a human.
+   */
+  async recoverPrize(runId: string, allocations: AllocationGateway): Promise<"applied" | "retried" | "needs_human"> {
+    const events = this.store.all(this.season.id);
+    if (events.some((event) => event.event === "PRIZE_ALLOCATION_GRANTED" && event.runId === runId)) return "applied";
+    const applying = events.find((event) => event.event === "PRIZE_ALLOCATION_APPLYING" && event.runId === runId);
+    if (!applying?.playerId || applying.amountUsd === null) throw new Error("No allocation recovery is pending for this run.");
+    const before = applying.raw.before_lifetime_allocation_usd;
+    const target = applying.raw.target_lifetime_allocation_usd;
+    if (typeof before !== "number" || typeof target !== "number") throw new Error("Allocation recovery record is malformed.");
+    const current = await allocations.inspect(applying.playerId);
+    if (current.lifetimeAllocationUsd === target) {
+      this.recordGranted(applying, { lifetimeAllocationUsd: target, raw: current.raw }, "recovery_confirmed_applied");
+      return "applied";
+    }
+    if (current.lifetimeAllocationUsd === before) {
+      const response = await allocations.setLifetimeAllocation({ playerId: applying.playerId, lifetimeAllocationUsd: target, reference: runId });
+      this.recordGranted(applying, response, "recovery_retry_applied");
+      return "retried";
+    }
+    this.store.append(gameEvent("PRIZE_ALLOCATION_RECONCILIATION_REQUIRED", {
+      seasonId: this.season.id, runId, playerId: applying.playerId, amountUsd: applying.amountUsd, reason: "hosted_allocation_changed", policyHash: applying.policyHash,
+      raw: { before_lifetime_allocation_usd: before, target_lifetime_allocation_usd: target, current_lifetime_allocation_usd: current.lifetimeAllocationUsd }
+    }));
+    return "needs_human";
+  }
+
+  private recordGranted(
+    pending: { seasonId: string; runId: string; playerId: string | null; amountUsd: number | null; policyHash: string | null },
+    response: { lifetimeAllocationUsd: number; raw: import("../orbio/types.js").JsonObject },
+    reason: string
+  ): void {
+    if (!pending.playerId || pending.amountUsd === null) throw new Error("Cannot record a prize without a player and amount.");
     this.store.append(gameEvent("PRIZE_ALLOCATION_GRANTED", {
-      seasonId: this.season.id, runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason: "manual_allocation", policyHash: pending.policyHash,
+      seasonId: this.season.id, runId: pending.runId, playerId: pending.playerId, amountUsd: pending.amountUsd, reason, policyHash: pending.policyHash,
       raw: { hosted_lifetime_allocation_usd: response.lifetimeAllocationUsd, upstream: providerEvidence(response.raw) }
     }));
   }

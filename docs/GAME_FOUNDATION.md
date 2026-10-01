@@ -24,7 +24,7 @@ Season one should be funded with `$50`. The runner refuses an unpriced model, a 
 
 The game adapter now targets the real hosted admin surface: it reads `GET /admin/tokens`, then patches `PATCH /admin/tokens/<handle>` with the **increased absolute** `lifetimeAllocationUsd`. A game player must use a token issued with a finite `$0.00` allocation; an unlimited hosted token is refused because an increment cannot be audited against its unlimited state.
 
-The hosted route currently has no idempotency key. `PRIZE_ALLOCATION_APPLYING` is written before the PATCH, and any crash in that window blocks retry with a reconciliation error rather than risk a duplicate allocation. A proper hosted allocation endpoint must accept a run reference idempotently before prizes are automated.
+The hosted route currently has no idempotency key, so `PRIZE_ALLOCATION_APPLYING` records the allocation value read just before the PATCH (`before`) and the exact absolute value requested (`target`). Recovery reads the token again: `target` confirms the prize landed; `before` makes one retry safe; any third value creates `PRIZE_ALLOCATION_RECONCILIATION_REQUIRED` for a human. This keeps season-one's hand-granted prizes safe without changing the service that holds the upstream key.
 
 ## What is deliberately not wired yet
 
