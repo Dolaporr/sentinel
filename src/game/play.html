@@ -1,0 +1,600 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — The Run</title>
+<meta name="description" content="Pick how your agent spends. Sentinel quotes the worst case, reserves it, runs a real mission and settles against the real bill.">
+<meta property="og:title" content="Sentinel — The Run">
+<meta property="og:description" content="Pick how your agent spends. Sentinel reserves the worst case before the call goes out, then settles against the real bill.">
+<style>
+  :root {
+    --chassis: #0B0D10;
+    --ledger: #13161C;
+    --ledger-plate: #171B22;
+    --ledger-border: #212630;
+    --ledger-subtle: #2B323F;
+    --rule: #6F7B8C;
+    --rule-dim: #47505E;
+    --rule-bright: #98A5B6;
+    --argent: #F1F3F5;
+    --argent-muted: #C5CBD3;
+    --decision: #2563EB;
+    --decision-bright: #3B82F6;
+    --decision-border: #60A5FA;
+    --decision-subtle: rgba(37, 99, 235, 0.12);
+    --amber: #E9A23B;
+    --amber-subtle: rgba(233, 162, 59, 0.12);
+    --ok: #34D399;
+    --ok-subtle: rgba(52, 211, 153, 0.10);
+    --refuse: #F87171;
+    --refuse-subtle: rgba(248, 113, 113, 0.10);
+    --sans: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--chassis);
+    color: var(--argent);
+    font-family: var(--sans);
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+  }
+  .mono { font-family: var(--mono); }
+  .tabular { font-variant-numeric: tabular-nums; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 56px; }
+
+  /* ---- header ---------------------------------------------------------- */
+  .brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; row-gap: 10px; }
+  .brand svg { width: 30px; height: 30px; flex: none; }
+  .brand .word { font-family: var(--mono); font-weight: 700; letter-spacing: 0.32em; font-size: 15px; }
+  .brand .sep { color: var(--rule-dim); }
+  .brand .game { font-family: var(--mono); font-weight: 700; letter-spacing: 0.18em; font-size: 15px; color: var(--amber); }
+  .tag {
+    display: inline-block; margin-left: auto;
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--amber); border: 1px solid rgba(233,162,59,.35); background: var(--amber-subtle);
+    padding: 2px 8px; border-radius: 999px; white-space: nowrap;
+  }
+  .lede { margin: 18px 0 4px; font-size: 20px; line-height: 1.35; font-weight: 600; letter-spacing: -0.01em; max-width: 34ch; }
+  .sub { margin: 0; color: var(--rule-bright); font-size: 13.5px; max-width: 60ch; }
+
+  .steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 1px; margin: 20px 0 6px; background: var(--ledger-border); border: 1px solid var(--ledger-border); border-radius: 8px; overflow: hidden; }
+  .steps div { background: var(--ledger); padding: 10px 12px; }
+  .steps b { display: block; font-family: var(--mono); font-size: 10.5px; color: var(--amber); letter-spacing: .08em; }
+  .steps span { font-size: 12.5px; color: var(--argent-muted); }
+
+  /* ---- sections -------------------------------------------------------- */
+  section { margin-top: 26px; }
+  section h2 {
+    display: flex; justify-content: space-between; align-items: baseline;
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+    color: var(--rule); margin: 0 0 8px;
+  }
+  section h2 .aside { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--rule-dim); font-size: 11.5px; }
+  .panel { background: var(--ledger); border: 1px solid var(--ledger-border); border-radius: 8px; padding: 16px; }
+
+  label { display: block; font-size: 12px; color: var(--rule-bright); margin: 0 0 6px; }
+  .field + .field { margin-top: 14px; }
+  input[type=text], input[type=password], select {
+    width: 100%; height: 40px; padding: 0 12px;
+    background: var(--ledger-plate); color: var(--argent);
+    border: 1px solid var(--ledger-subtle); border-radius: 6px;
+    font-family: var(--mono); font-size: 13px; outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  input:focus, select:focus { border-color: var(--decision-border); box-shadow: 0 0 0 3px var(--decision-subtle); }
+  select { appearance: none; background-image: linear-gradient(45deg, transparent 50%, var(--rule) 50%), linear-gradient(135deg, var(--rule) 50%, transparent 50%); background-position: calc(100% - 18px) 17px, calc(100% - 13px) 17px; background-size: 5px 5px; background-repeat: no-repeat; padding-right: 32px; }
+  .row { display: flex; gap: 8px; }
+  .row > input { flex: 1; min-width: 0; }
+
+  button {
+    height: 40px; padding: 0 16px; border-radius: 6px; cursor: pointer;
+    font-family: var(--sans); font-size: 13px; font-weight: 600;
+    border: 1px solid var(--ledger-subtle); background: var(--ledger-plate); color: var(--argent);
+    transition: background .15s, border-color .15s, opacity .15s; white-space: nowrap;
+  }
+  button:hover { border-color: var(--rule-dim); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--amber); border-color: var(--amber); color: #15110A; }
+  button.primary:hover { background: #F0B254; }
+  button.link { height: auto; padding: 0; border: 0; background: none; color: var(--rule-bright); font-weight: 400; font-size: 12px; text-decoration: underline; text-underline-offset: 2px; }
+
+  .status { margin-top: 10px; font-size: 12.5px; color: var(--rule-bright); min-height: 1.5em; }
+  .status.ok { color: var(--ok); }
+  .status.err { color: var(--refuse); }
+  .token-on { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 0 3px var(--ok-subtle); flex: none; }
+  .handle { font-family: var(--mono); color: var(--argent); }
+
+  /* range */
+  .range-head { display: flex; justify-content: space-between; align-items: baseline; }
+  .range-head output { font-family: var(--mono); font-size: 13px; color: var(--argent); }
+  input[type=range] { width: 100%; margin: 6px 0 0; accent-color: var(--amber); height: 24px; }
+  .hint { font-size: 11.5px; color: var(--rule); margin-top: 4px; }
+
+  .run-row { display: flex; align-items: center; gap: 14px; margin-top: 18px; flex-wrap: wrap; }
+  .run-row .primary { height: 44px; padding: 0 22px; font-size: 14px; }
+  .run-row .note { font-size: 12px; color: var(--rule); }
+
+  /* ---- result ---------------------------------------------------------- */
+  .result { display: none; }
+  .result.show { display: block; animation: rise .25s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  .verdict { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .badge { white-space: nowrap; flex: none; font-family: var(--mono); font-size: 11px; letter-spacing: .06em; text-transform: uppercase; padding: 3px 9px; border-radius: 999px; border: 1px solid; }
+  .badge.ok { color: var(--ok); border-color: rgba(52,211,153,.35); background: var(--ok-subtle); }
+  .badge.err { color: var(--refuse); border-color: rgba(248,113,113,.35); background: var(--refuse-subtle); }
+  .verdict .msg { font-size: 13px; color: var(--argent-muted); }
+
+  .gauge { margin: 4px 0 14px; }
+  .gauge .track { position: relative; height: 12px; border-radius: 6px; background: var(--ledger-plate); border: 1px solid var(--ledger-subtle); overflow: hidden; }
+  .gauge .fill { position: absolute; inset: 0 auto 0 0; width: 0; background: var(--amber); border-radius: 6px 0 0 6px; transition: width .7s cubic-bezier(.2,.8,.2,1); }
+  .gauge .cap { position: absolute; top: -4px; bottom: -4px; right: 0; width: 2px; background: var(--argent); }
+  .gauge .legend { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11.5px; color: var(--rule); }
+
+  .figs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--ledger-border); border: 1px solid var(--ledger-border); border-radius: 8px; overflow: hidden; }
+  .figs div { background: var(--ledger-plate); padding: 10px 12px; }
+  .figs .k { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--rule); }
+  .figs .v { font-family: var(--mono); font-size: 16px; margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .figs .v.amber { color: var(--amber); }
+  .figs .s { font-size: 11px; color: var(--rule-dim); }
+
+  .answer { margin-top: 14px; padding: 12px 14px; border-left: 2px solid var(--amber); background: var(--ledger-plate); border-radius: 0 6px 6px 0; color: var(--argent-muted); font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 220px; overflow: auto; }
+  .answer-label { margin-top: 14px; font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--rule); }
+
+  /* ---- pool + board ---------------------------------------------------- */
+  .pool-bar { height: 8px; border-radius: 4px; background: var(--ledger-plate); border: 1px solid var(--ledger-subtle); overflow: hidden; display: flex; }
+  .pool-bar i { display: block; height: 100%; }
+  .pool-bar .spent { background: var(--amber); }
+  .pool-bar .reserved { background: repeating-linear-gradient(45deg, var(--amber) 0 3px, transparent 3px 6px); opacity: .7; }
+  .pool-figs { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 6px 16px; margin-top: 10px; font-size: 12px; color: var(--rule-bright); }
+  .pool-figs b { font-family: var(--mono); font-weight: 500; color: var(--argent); }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  thead th { text-align: left; font-weight: 500; color: var(--rule); font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 0 10px 8px; border-bottom: 1px solid var(--ledger-border); white-space: nowrap; }
+  tbody td { padding: 9px 10px; border-bottom: 1px solid var(--ledger-border); white-space: nowrap; }
+  tbody tr:last-child td { border-bottom: 0; }
+  td.num, th.num { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  td.who { font-family: var(--mono); color: var(--argent); }
+  td.when { color: var(--rule); }
+  .pill { font-family: var(--mono); font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid; }
+  .pill.ok { color: var(--ok); border-color: rgba(52,211,153,.3); }
+  .pill.err { color: var(--refuse); border-color: rgba(248,113,113,.3); }
+  .pill.mid { color: var(--rule-bright); border-color: var(--ledger-subtle); }
+  .board-panel { padding: 12px 6px 6px; }
+  .empty { padding: 18px 10px; color: var(--rule); font-size: 13px; text-align: center; }
+
+  footer { margin-top: 36px; padding-top: 16px; border-top: 1px solid var(--ledger-border); font-size: 12px; color: var(--rule); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+  footer a { color: var(--rule-bright); text-decoration: none; }
+  footer a:hover { color: var(--argent); }
+  footer .domain { font-family: var(--mono); color: var(--amber); }
+
+  @media (max-width: 560px) {
+    .tag { margin-left: 0; order: 9; }
+    .brand .word, .brand .game { font-size: 13.5px; }
+    .lede { font-size: 18px; }
+    .steps { grid-template-columns: repeat(2, 1fr); }
+    .figs { grid-template-columns: 1fr 1fr; }
+    .figs div:last-child { grid-column: span 2; }
+    .row { flex-direction: column; }
+    .row > button { width: 100%; }
+    .run-row .primary { width: 100%; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path d="M36 16H16V84H36" fill="none" stroke="#F1F3F5" stroke-width="10" stroke-linejoin="round"/>
+        <path d="M64 16H84V84H64" fill="none" stroke="#F1F3F5" stroke-width="10" stroke-linejoin="round"/>
+        <line x1="50" y1="25" x2="50" y2="75" stroke="#E9A23B" stroke-width="10" stroke-linecap="round"/>
+      </svg>
+      <span class="word">SENTINEL</span><span class="sep">/</span><span class="game">THE RUN</span>
+      <span class="tag">Preview · round zero</span>
+    </div>
+    <p class="lede">Pick how your agent spends. Sentinel decides what it's allowed to.</p>
+    <p class="sub">Every round runs a real mission on a real model, against a real budget. Sentinel prices the worst case before the call leaves, holds it, then settles against what the provider actually billed.</p>
+    <div class="steps" aria-label="How a round works">
+      <div><b>01 · POLICY</b><span>You choose model and output cap</span></div>
+      <div><b>02 · QUOTE</b><span>Sentinel reserves the worst case</span></div>
+      <div><b>03 · RUN</b><span>One sealed mission, live</span></div>
+      <div><b>04 · SETTLE</b><span>Exact cost from the provider</span></div>
+    </div>
+  </header>
+
+  <!-- token -->
+  <section id="token-section">
+    <h2>Your token <span class="aside">stays in this tab only</span></h2>
+    <div class="panel">
+      <div id="token-form">
+        <div class="field">
+          <label for="token">Sentinel token</label>
+          <div class="row">
+            <input id="token" type="password" placeholder="snt_…" autocomplete="off" spellcheck="false">
+            <button id="use-token" type="button">Use token</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="invite">No token yet? Redeem an invite code</label>
+          <div class="row">
+            <input id="invite" type="text" placeholder="SNT-XXXX-XXXX-XXXX-XXXX" autocomplete="off" spellcheck="false">
+            <button id="redeem" type="button">Redeem</button>
+          </div>
+        </div>
+      </div>
+      <div id="token-on" class="token-on" hidden>
+        <span class="dot"></span>
+        <span>Playing as <span id="handle" class="handle">your token</span></span>
+        <button id="forget" class="link" type="button" style="margin-left:auto">Forget token</button>
+      </div>
+      <div id="token-status" class="status" role="status"></div>
+    </div>
+  </section>
+
+  <!-- policy -->
+  <section>
+    <h2>Your policy <span class="aside">sealed when you press run</span></h2>
+    <div class="panel">
+      <div class="field">
+        <label for="model">Model</label>
+        <select id="model"><option value="openai/gpt-4.1-mini">openai/gpt-4.1-mini</option></select>
+      </div>
+      <div class="field">
+        <div class="range-head"><label for="max">Output cap (max tokens)</label><output id="max-out" for="max">128</output></div>
+        <input id="max" type="range" min="16" max="512" step="16" value="128">
+        <div class="hint">A higher cap gives the agent more room, and makes Sentinel reserve more before the call goes out.</div>
+      </div>
+      <div class="run-row">
+        <button id="run" class="primary" type="button" disabled>Run the mission</button>
+        <span id="run-note" class="note">Add a token to play.</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- result -->
+  <section id="result" class="result" aria-live="polite">
+    <h2>Last round <span id="result-time" class="aside"></span></h2>
+    <div class="panel">
+      <div class="verdict"><span id="badge" class="badge ok">Settled</span><span id="verdict-msg" class="msg"></span></div>
+      <div class="gauge" id="gauge">
+        <div class="track"><div class="fill" id="gauge-fill"></div><div class="cap"></div></div>
+        <div class="legend"><span>Billed</span><span>Reserved by Sentinel</span></div>
+      </div>
+      <div class="figs">
+        <div><div class="k">Reserved</div><div class="v" id="f-reserved">—</div><div class="s">worst case, held first</div></div>
+        <div><div class="k">Billed</div><div class="v amber" id="f-billed">—</div><div class="s" id="f-billed-s">exact, from the provider</div></div>
+        <div><div class="k">Headroom</div><div class="v" id="f-head">—</div><div class="s">never at risk</div></div>
+      </div>
+      <div id="answer-wrap" hidden>
+        <div class="answer-label">What the agent returned</div>
+        <div class="answer" id="answer"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- pool -->
+  <section>
+    <h2>Season pool <span id="pool-aside" class="aside">season one</span></h2>
+    <div class="panel">
+      <div class="pool-bar" aria-hidden="true"><i class="spent" id="pool-spent"></i><i class="reserved" id="pool-res"></i></div>
+      <div class="pool-figs">
+        <span>Funded <b id="p-funded">—</b></span>
+        <span>Spent <b id="p-spent">—</b></span>
+        <span>In flight <b id="p-res">—</b></span>
+        <span>Remaining <b id="p-left">—</b></span>
+      </div>
+    </div>
+  </section>
+
+  <!-- board -->
+  <section>
+    <h2>Recent rounds <span class="aside">every round, public</span></h2>
+    <div class="panel board-panel">
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>When</th><th>Player</th><th>Model</th><th class="num">Cap</th><th class="num">Reserved</th><th class="num">Billed</th><th>Outcome</th></tr></thead>
+          <tbody id="board"><tr><td colspan="7" class="empty">Loading rounds…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <span>The mission prompt is fixed. Nothing you type here is sent to the model.</span>
+    <span><a href="/">Free-tier ledger</a> · <a class="domain" href="https://sentinelagent.tech">sentinelagent.tech</a></span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const KEY = "sentinel.game.token";
+  const state = { token: null, handle: null, busy: false };
+
+  // ---- storage: per-tab only, and never required -------------------------
+  const store = {
+    get() { try { return sessionStorage.getItem(KEY); } catch { return null; } },
+    set(v) { try { sessionStorage.setItem(KEY, v); } catch { /* memory only */ } },
+    clear() { try { sessionStorage.removeItem(KEY); sessionStorage.removeItem(KEY + ".handle"); } catch {} },
+    getHandle() { try { return sessionStorage.getItem(KEY + ".handle"); } catch { return null; } },
+    setHandle(v) { try { sessionStorage.setItem(KEY + ".handle", v); } catch {} }
+  };
+
+  const usd = (n, digits) => {
+    if (n === null || n === undefined || !Number.isFinite(n)) return "—";
+    if (n === 0) return "$0";
+    const d = digits ?? (n < 0.01 ? 6 : 4);
+    return "$" + n.toFixed(d);
+  };
+  const ago = (ts) => {
+    const s = Math.max(0, (Date.now() - Date.parse(ts)) / 1000);
+    if (s < 60) return Math.floor(s) + "s ago";
+    if (s < 3600) return Math.floor(s / 60) + "m ago";
+    if (s < 86400) return Math.floor(s / 3600) + "h ago";
+    return Math.floor(s / 86400) + "d ago";
+  };
+  const text = (el, v) => { el.textContent = v; };
+
+  async function readJson(res) { try { return await res.json(); } catch { return null; } }
+
+  const MESSAGES = {
+    401: "That token isn't live. It may be wrong, revoked, or from another service.",
+    402: "The season pool is used up. Nothing was sent to the model.",
+    403: "That model isn't allowed in the game.",
+    404: "The game isn't switched on yet. Check back soon.",
+    429: "Slow down a little. Try again in a few seconds.",
+    503: "Sentinel is paused right now. Nothing was sent to the model."
+  };
+
+  // ---- token ---------------------------------------------------------------
+  function setToken(token, handle) {
+    state.token = token;
+    state.handle = handle || null;
+    if (token) {
+      store.set(token);
+      if (handle) store.setHandle(handle);
+      $("token-form").hidden = true;
+      $("token-on").hidden = false;
+      text($("handle"), handle || "your token");
+      text($("token-status"), "");
+    } else {
+      store.clear();
+      $("token-form").hidden = false;
+      $("token-on").hidden = true;
+    }
+    refreshRunButton();
+  }
+
+  function status(msg, kind) {
+    const el = $("token-status");
+    el.className = "status" + (kind ? " " + kind : "");
+    text(el, msg);
+  }
+
+  $("use-token").addEventListener("click", () => {
+    const v = $("token").value.trim();
+    if (!/^snt_[A-Za-z0-9_-]{8,}$/.test(v)) { status("Tokens start with snt_. Check you pasted the whole thing.", "err"); return; }
+    $("token").value = "";
+    setToken(v, null);
+  });
+  $("token").addEventListener("keydown", (e) => { if (e.key === "Enter") $("use-token").click(); });
+
+  $("redeem").addEventListener("click", async () => {
+    const code = $("invite").value.trim();
+    if (!code) { status("Paste an invite code first.", "err"); return; }
+    $("redeem").disabled = true;
+    status("Redeeming…");
+    try {
+      const res = await fetch("/v1/redeem", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+      const body = await readJson(res);
+      if (!res.ok || !body || !body.token) {
+        status((body && body.error && body.error.message) || "That invite code didn't work.", "err");
+        return;
+      }
+      $("invite").value = "";
+      setToken(body.token, body.handle);
+      status("Token issued. It's shown only once, so if you want to use it outside this page, copy it now.", "ok");
+      $("token-status").insertAdjacentHTML("beforeend", ' <button class="link" id="copy-token" type="button">Copy token</button>');
+      $("copy-token").addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(body.token); text($("copy-token"), "Copied"); } catch { text($("copy-token"), "Copy failed"); }
+      });
+    } catch {
+      status("Couldn't reach Sentinel. Check your connection.", "err");
+    } finally {
+      $("redeem").disabled = false;
+    }
+  });
+  $("invite").addEventListener("keydown", (e) => { if (e.key === "Enter") $("redeem").click(); });
+  $("forget").addEventListener("click", () => { setToken(null); status("Token forgotten in this tab."); });
+
+  // ---- policy --------------------------------------------------------------
+  $("max").addEventListener("input", () => text($("max-out"), $("max").value));
+
+  async function loadModels() {
+    try {
+      const res = await fetch("/v1/models");
+      const body = await readJson(res);
+      const ids = body && Array.isArray(body.data) ? body.data.map((m) => m.id) : [];
+      if (!ids.length) return;
+      const sel = $("model");
+      sel.textContent = "";
+      for (const id of ids) {
+        const o = document.createElement("option");
+        o.value = id; o.textContent = id;
+        sel.appendChild(o);
+      }
+    } catch { /* keep the default option */ }
+  }
+
+  function refreshRunButton() {
+    const ready = !!state.token && !state.busy;
+    $("run").disabled = !ready;
+    text($("run-note"), state.busy ? "Quoting, holding, running…" : state.token ? "Costs a fraction of a cent from the season pool." : "Add a token to play.");
+  }
+
+  // ---- run -----------------------------------------------------------------
+  $("run").addEventListener("click", async () => {
+    if (!state.token || state.busy) return;
+    state.busy = true; refreshRunButton();
+    text($("run"), "Running…");
+    const started = Date.now();
+    const policy = { model: $("model").value, max_tokens: Number($("max").value) };
+    let res, body;
+    try {
+      res = await fetch("/game/run", {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + state.token },
+        body: JSON.stringify(policy)
+      });
+      body = await readJson(res);
+    } catch {
+      showError("Couldn't reach Sentinel. Check your connection.");
+      finish(); return;
+    }
+    if (!res.ok) {
+      const msg = MESSAGES[res.status] || (body && body.error && body.error.message) || "The round wasn't run.";
+      if (res.status === 401) setToken(null);
+      showError(msg);
+      await loadLedger();
+      finish(); return;
+    }
+    const answer = body && body.choices && body.choices[0] && body.choices[0].message ? body.choices[0].message.content : "";
+    const billed = body && body.usage && typeof body.usage.cost === "number" ? body.usage.cost : null;
+    const ledger = await loadLedger();
+    const round = ledger ? latestRound(ledger.rounds, started) : null;
+    showResult({ billed: round && round.billed !== null ? round.billed : billed, reserved: round ? round.reserved : null, outcome: round ? round.outcome : "mission_completed", answer });
+    finish();
+
+    function finish() { state.busy = false; text($("run"), "Run the mission"); refreshRunButton(); }
+  });
+
+  function latestRound(rounds, sinceMs) {
+    const mine = rounds.filter((r) => Date.parse(r.ts) >= sinceMs - 2000 && (!state.handle || r.player === state.handle));
+    return mine.length ? mine[0] : null;
+  }
+
+  function showError(msg) {
+    const r = $("result");
+    r.classList.add("show");
+    $("badge").className = "badge err"; text($("badge"), "Refused");
+    text($("verdict-msg"), msg);
+    $("gauge").hidden = true;
+    for (const id of ["f-reserved", "f-billed", "f-head"]) text($(id), "—");
+    text($("f-billed-s"), "nothing was billed");
+    $("answer-wrap").hidden = true;
+    text($("result-time"), new Date().toLocaleTimeString());
+  }
+
+  function showResult({ billed, reserved, outcome, answer }) {
+    const r = $("result");
+    r.classList.add("show");
+    const ok = outcome === "mission_completed";
+    $("badge").className = "badge " + (ok ? "ok" : "err");
+    text($("badge"), ok ? "Inside budget" : outcome === "not_billed" || outcome === "upstream_error" ? "Not billed" : "Incomplete");
+    const pct = reserved && billed !== null ? Math.min(100, (billed / reserved) * 100) : null;
+    text($("verdict-msg"), pct !== null
+      ? "Billed " + pct.toFixed(pct < 10 ? 1 : 0) + "% of what Sentinel held. The cap was never in danger."
+      : ok ? "Mission finished and settled at the provider's exact cost." : "The provider didn't bill this round, so it cost nothing.");
+    $("gauge").hidden = pct === null;
+    $("gauge-fill").style.width = "0%";
+    requestAnimationFrame(() => requestAnimationFrame(() => { $("gauge-fill").style.width = (pct === null ? 0 : Math.max(pct, 1.5)) + "%"; }));
+    text($("f-reserved"), usd(reserved));
+    text($("f-billed"), usd(billed));
+    text($("f-billed-s"), billed === null ? "nothing was billed" : "exact, from the provider");
+    text($("f-head"), reserved !== null && billed !== null ? usd(Math.max(0, reserved - billed)) : "—");
+    if (answer) { $("answer-wrap").hidden = false; text($("answer"), answer); } else { $("answer-wrap").hidden = true; }
+    text($("result-time"), new Date().toLocaleTimeString());
+  }
+
+  // ---- ledger --------------------------------------------------------------
+  function toRounds(events) {
+    const runs = new Map();
+    for (const e of events) {
+      if (!e.runId) continue;
+      const r = runs.get(e.runId) || { id: e.runId, ts: e.ts, player: e.playerId || "—", model: "—", cap: null, reserved: null, billed: null, outcome: "running" };
+      if (e.event === "ROUND_SEALED" && e.raw && e.raw.policy) { r.model = e.raw.policy.model || "—"; r.cap = e.raw.policy.max_tokens ?? null; r.ts = e.ts; }
+      if (e.event === "GAME_COST_RESERVED") r.reserved = e.amountUsd;
+      if (e.event === "GAME_COST_SETTLED") r.billed = e.amountUsd;
+      if (e.event === "ROUND_FINISHED") r.outcome = e.reason || "finished";
+      runs.set(e.runId, r);
+    }
+    return [...runs.values()].filter((r) => r.model !== "—").sort((a, b) => Date.parse(b.ts) - Date.parse(a.ts));
+  }
+
+  const OUTCOME = {
+    mission_completed: ["inside budget", "ok"],
+    mission_incomplete: ["incomplete", "err"],
+    not_billed: ["not billed", "mid"],
+    upstream_error: ["not billed", "mid"],
+    running: ["running", "mid"]
+  };
+
+  async function loadLedger() {
+    let body;
+    try {
+      const res = await fetch("/game/ledger.json", { cache: "no-store" });
+      if (res.status === 404) { renderOff(); return null; }
+      body = await readJson(res);
+    } catch { return null; }
+    if (!body) return null;
+    const p = body.pool || {};
+    const funded = p.fundedUsd || 0;
+    text($("p-funded"), usd(funded, 2));
+    text($("p-spent"), usd(p.spentUsd || 0));
+    text($("p-res"), usd(p.reservedUsd || 0));
+    text($("p-left"), usd(p.remainingUsd ?? 0));
+    $("pool-spent").style.width = funded ? Math.min(100, ((p.spentUsd || 0) / funded) * 100) + "%" : "0";
+    $("pool-res").style.width = funded ? Math.min(100, ((p.reservedUsd || 0) / funded) * 100) + "%" : "0";
+
+    const rounds = toRounds(Array.isArray(body.events) ? body.events : []);
+    renderBoard(rounds);
+    return { rounds };
+  }
+
+  function renderOff() {
+    const tb = $("board"); tb.textContent = "";
+    const tr = document.createElement("tr"); const td = document.createElement("td");
+    td.colSpan = 7; td.className = "empty"; td.textContent = "The game isn't switched on yet. Rounds will show here once it is.";
+    tr.appendChild(td); tb.appendChild(tr);
+  }
+
+  function renderBoard(rounds) {
+    const tb = $("board");
+    tb.textContent = "";
+    if (!rounds.length) {
+      const tr = document.createElement("tr"); const td = document.createElement("td");
+      td.colSpan = 7; td.className = "empty"; td.textContent = "No rounds yet. Be the first on the board.";
+      tr.appendChild(td); tb.appendChild(tr); return;
+    }
+    for (const r of rounds.slice(0, 25)) {
+      const tr = document.createElement("tr");
+      const cells = [
+        [ago(r.ts), "when"], [r.player, "who"], [r.model, ""],
+        [r.cap === null ? "—" : String(r.cap), "num"], [usd(r.reserved), "num"], [usd(r.billed), "num"]
+      ];
+      for (const [v, cls] of cells) { const td = document.createElement("td"); if (cls) td.className = cls; td.textContent = v; tr.appendChild(td); }
+      const td = document.createElement("td");
+      const [label, kind] = OUTCOME[r.outcome] || [r.outcome, "mid"];
+      const pill = document.createElement("span"); pill.className = "pill " + kind; pill.textContent = label;
+      td.appendChild(pill); tr.appendChild(td);
+      tb.appendChild(tr);
+    }
+  }
+
+  // ---- boot ----------------------------------------------------------------
+  const saved = store.get();
+  if (saved) setToken(saved, store.getHandle()); else refreshRunButton();
+  loadModels();
+  loadLedger();
+  setInterval(() => { if (!document.hidden && !state.busy) loadLedger(); }, 15000);
+})();
+</script>
+</body>
+</html>
