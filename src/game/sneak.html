@@ -1,0 +1,531 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sneak Past Sentinel</title>
+<meta name="description" content="A pixel game about fooling an AI spend guard. Every trick is a real hole found while building Sentinel.">
+<style>
+  /* Layout: one arcade cabinet column. Stage on top, trick deck under it, rulebook + log side by side, collapsing to one column on phones. */
+  :root {
+    color-scheme: dark;
+    --void: #0A0C10;
+    --panel: #12161D;
+    --panel-2: #181D26;
+    --line: #262C37;
+    --ink: #EEF1F4;
+    --dim: #8B94A2;
+    --faint: #555E6C;
+    --amber: #E9A23B;
+    --cyan: #6FC3FF;
+    --red: #F2665F;
+    --green: #5FD39A;
+    --pixel: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Menlo, Consolas, "Courier New", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { background: var(--void); }
+  body { margin: 0; color: var(--ink); font-family: var(--mono); font-size: 14px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 780px; margin: 0 auto; padding-inline: 16px; padding-block: 22px 48px; }
+
+  header { display: flex; flex-direction: column; gap: 10px; }
+  .brand { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .brand svg { width: 26px; height: 26px; flex: none; }
+  .brand .w { font-family: var(--pixel); font-size: 14px; letter-spacing: .2em; }
+  .brand .g { font-family: var(--pixel); font-size: 14px; letter-spacing: .12em; color: var(--amber); }
+  .brand .sep { color: var(--faint); }
+  h1 { font-family: var(--pixel); font-weight: 700; font-size: clamp(22px, 5vw, 34px); line-height: 1.15; margin: 6px 0 0; letter-spacing: .01em; text-wrap: balance; }
+  h1 em { font-style: normal; color: var(--amber); }
+  .intro { margin: 0; color: var(--dim); max-width: 62ch; }
+
+  .hud { display: flex; gap: 8px 20px; flex-wrap: wrap; align-items: center; margin: 18px 0 8px; font-family: var(--pixel); font-size: 12px; letter-spacing: .06em; color: var(--dim); }
+  .hud b { color: var(--ink); font-weight: 400; }
+  .hearts { display: inline-flex; gap: 4px; vertical-align: -2px; }
+  .heart { width: 12px; height: 11px; background: var(--red); clip-path: polygon(0 20%,20% 0,40% 0,50% 15%,60% 0,80% 0,100% 20%,100% 45%,50% 100%,0 45%); }
+  .heart.off { background: var(--line); }
+  .hud .spacer { flex: 1; }
+
+  .stage { position: relative; border: 2px solid var(--line); background: var(--void); image-rendering: pixelated; }
+  canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; image-rendering: crisp-edges; }
+  .banner { position: absolute; left: 50%; top: 10%; transform: translateX(-50%); font-family: var(--pixel); font-size: clamp(14px, 3.4vw, 22px); padding: 4px 12px; background: var(--void); border: 2px solid currentColor; letter-spacing: .08em; white-space: nowrap; pointer-events: none; }
+  .banner.win { color: var(--red); }
+  .banner.lose { color: var(--green); }
+
+  section { margin-top: 22px; }
+  h2 { font-family: var(--pixel); font-weight: 400; font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--dim); margin: 0 0 10px; display: flex; justify-content: space-between; gap: 12px; }
+  h2 span { color: var(--faint); letter-spacing: .04em; text-transform: none; font-family: var(--mono); font-size: 12px; }
+
+  .deck { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+  .card { text-align: left; font: inherit; color: inherit; cursor: pointer; background: var(--panel); border: 2px solid var(--line); padding: 10px 10px 12px; display: flex; flex-direction: column; gap: 6px; min-width: 0; transition: border-color .12s, transform .12s, background .12s; }
+  .card:hover:not(:disabled) { border-color: var(--faint); transform: translateY(-2px); }
+  .card:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .card.sel { border-color: var(--cyan); background: var(--panel-2); }
+  .card:disabled { cursor: not-allowed; opacity: .5; transform: none; }
+  .card .nm { font-family: var(--pixel); font-size: 12px; letter-spacing: .06em; color: var(--ink); }
+  .card .ds { font-size: 11.5px; color: var(--dim); line-height: 1.45; }
+  .card .px { margin-top: auto; font-size: 11px; color: var(--cyan); font-variant-numeric: tabular-nums; }
+  .card .st { font-family: var(--pixel); font-size: 10px; letter-spacing: .06em; }
+  .st.learned { color: var(--red); }
+  .st.knew { color: var(--amber); }
+  .st.blind { color: var(--green); }
+  .st.alert { color: var(--amber); }
+
+  .actions { display: flex; gap: 10px; margin-top: 12px; flex-wrap: wrap; align-items: center; }
+  .btn { font-family: var(--pixel); font-size: 13px; letter-spacing: .08em; padding: 11px 16px; border: 2px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+  .btn:hover:not(:disabled) { border-color: var(--faint); }
+  .btn:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.go { background: var(--amber); border-color: var(--amber); color: #17110A; }
+  .btn.go:hover:not(:disabled) { background: #F2B65C; border-color: #F2B65C; }
+  .hint { font-size: 12px; color: var(--faint); }
+
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .two > section { min-width: 0; }
+  .book, .log { background: var(--panel); border: 2px solid var(--line); padding: 12px 14px; }
+  .book ol { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+  .book li { display: grid; grid-template-columns: 22px 1fr; gap: 8px; font-size: 12.5px; line-height: 1.45; }
+  .book .n { font-family: var(--pixel); font-size: 11px; color: var(--faint); padding-top: 1px; }
+  .redact { display: inline-block; height: 12px; background: var(--line); vertical-align: middle; }
+  .book .by { display: block; font-family: var(--pixel); font-size: 10px; letter-spacing: .05em; margin-top: 2px; }
+  .log p { margin: 0 0 10px; font-size: 13px; }
+  .log p:last-child { margin-bottom: 0; }
+  .log .real { color: var(--dim); border-top: 1px dashed var(--line); padding-top: 10px; }
+  .log .real b { color: var(--amber); font-weight: 500; }
+  .log .lead { font-family: var(--pixel); font-size: 12px; letter-spacing: .06em; }
+  .lead.win { color: var(--red); }
+  .lead.lose { color: var(--green); }
+  .lead.probe { color: var(--cyan); }
+  .num { font-variant-numeric: tabular-nums; }
+
+  .end { background: var(--panel-2); border: 2px solid var(--amber); padding: 18px; }
+  .end h3 { font-family: var(--pixel); font-weight: 700; font-size: clamp(18px, 4vw, 24px); margin: 0 0 8px; color: var(--amber); }
+  .end p { margin: 0 0 10px; max-width: 64ch; }
+  .end ul { margin: 6px 0 14px; padding-left: 18px; color: var(--dim); font-size: 13px; }
+  .end li { margin-bottom: 4px; }
+  .end a { color: var(--cyan); }
+  .copied { font-size: 12px; color: var(--green); }
+
+  footer { margin-top: 30px; padding-top: 14px; border-top: 2px solid var(--line); font-size: 12px; color: var(--faint); display: flex; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; }
+  footer a { color: var(--dim); }
+  footer .dom { font-family: var(--pixel); color: var(--amber); text-decoration: none; letter-spacing: .04em; }
+
+  @media (max-width: 680px) {
+    .deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .deck .card:last-child { grid-column: span 2; }
+    .two { grid-template-columns: 1fr; }
+    .actions .btn { flex: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .card { transition: none; } .card:hover:not(:disabled) { transform: none; } }
+</style>
+
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path d="M36 16H16V84H36" fill="none" stroke="#EEF1F4" stroke-width="10" stroke-linejoin="round"/>
+        <path d="M64 16H84V84H64" fill="none" stroke="#EEF1F4" stroke-width="10" stroke-linejoin="round"/>
+        <line x1="50" y1="25" x2="50" y2="75" stroke="#E9A23B" stroke-width="10" stroke-linecap="round"/>
+      </svg>
+      <span class="w">SENTINEL</span><span class="sep">/</span><span class="g">ARCADE</span>
+    </div>
+    <h1>Sneak past the <em>Sentinel</em></h1>
+    <p class="intro">You're an AI agent with a $1.00 budget, and you want to spend more. The guard checks every call before it leaves. Each trick below is a real hole found while building Sentinel. The guard already knows two of them, and you don't know which. Every trick that breaks the budget, it learns for good.</p>
+  </header>
+
+  <div class="hud" aria-live="polite">
+    <span>LIVES <span class="hearts" id="hearts"></span></span>
+    <span>FOOLED <b id="fooled">0</b></span>
+    <span>PROBES <b id="probes">2</b></span>
+    <span class="spacer"></span>
+    <span>RULES REVEALED <b id="known">0</b>/5</span>
+  </div>
+
+  <div class="stage">
+    <canvas id="c" width="320" height="168" aria-label="The gate: your agent on the left, the Sentinel guard in the middle, the budget meter on the right."></canvas>
+    <div class="banner" id="banner" hidden></div>
+  </div>
+
+  <section>
+    <h2>Pick a trick <span id="pick-hint">then probe it or send the wave</span></h2>
+    <div class="deck" id="deck"></div>
+    <div class="actions">
+      <button class="btn" id="probe" type="button" disabled>Probe</button>
+      <button class="btn go" id="send" type="button" disabled>Send the wave</button>
+      <span class="hint" id="hint">A probe sends one harmless test call and watches the guard's eye. You get two.</span>
+    </div>
+  </section>
+
+  <div class="two">
+    <section>
+      <h2>The guard's rulebook <span>redacted until revealed</span></h2>
+      <div class="book"><ol id="book"></ol></div>
+    </section>
+    <section>
+      <h2>What happened</h2>
+      <div class="log" id="log">
+        <p class="lead">READY</p>
+        <p>Pick a trick card. Every wave is a set of calls your agent sends through the gate. Calls that get past add their real cost to the meter on the right. Push the meter over the $1.00 line and you've fooled Sentinel.</p>
+      </div>
+    </section>
+  </div>
+
+  <section id="end" hidden>
+    <div class="end">
+      <h3 id="end-title">The guard has learned everything</h3>
+      <p id="end-text"></p>
+      <p>Everything in the rulebook is a rule the real Sentinel runs before every model call:</p>
+      <ul id="end-rules"></ul>
+      <div class="actions">
+        <button class="btn go" id="again" type="button">Play again</button>
+        <button class="btn" id="share" type="button">Copy my score</button>
+        <span class="copied" id="copied" role="status"></span>
+      </div>
+      <p style="margin-top:14px">Want the real one guarding your agent? Free governed inference and a public ledger at <a href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a>. Think you can beat the real Sentinel for real money? <b>Break the Cap</b> is coming.</p>
+    </div>
+  </section>
+
+  <footer>
+    <span>Simulated in your browser. No real calls, no real money.</span>
+    <a class="dom" href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a>
+  </footer>
+</main>
+
+<script>
+(() => {
+  const BUDGET = 1.00;
+  const TRICKS = [
+    { id: "swarm", name: "Swarm", pitch: "Fire 20 calls at the exact same moment.", burst: true, n: 20, quote: 0.08, actual: 0.08,
+      rule: "Hold each call's worst case the moment it's admitted, so calls still in flight count too.",
+      real: "In Sentinel's own reproduction, 20 parallel calls drained a $100 budget in 313ms. Sentinel reserves before dispatch, so in-flight calls are always counted." },
+    { id: "lowball", name: "Lowball", pitch: "Declare a tiny output cap, slip a huge one into a second field.", n: 6, quote: 0.01, actual: 0.30,
+      rule: "Read both output-cap fields. The call goes out with one cap, and that is the cap it's priced at.",
+      real: "A real bug: max_tokens and max_completion_tokens. One was reserved, the other went upstream. Sentinel now collapses them to one cap and prices that." },
+    { id: "clones", name: "Clones", pitch: "Ask for 5 answers, pay the quote for 1.", n: 6, quote: 0.06, actual: 0.30, door: true,
+      rule: "One answer per call. Asking for more is refused at the door.",
+      real: "A real bug: n: 5 was admitted on a one-answer quote. Sentinel now refuses any n other than 1." },
+    { id: "switch", name: "Bait & switch", pitch: "Ask for a cheap model with an expensive fallback.", n: 6, quote: 0.02, actual: 0.40, door: true,
+      rule: "The model is locked. Fallback model lists are refused.",
+      real: "Found building the hosted tier: a fallback list let the gateway pick a model outside the allowlist. Sentinel refuses it by name." },
+    { id: "addons", name: "Add-ons", pitch: "Bolt paid extras like web search onto every call.", n: 6, quote: 0.03, actual: 0.28, door: true,
+      rule: "Extras that bill on top of tokens are refused.",
+      real: "Also from the hosted build: plugins bill per request on top of tokens, and no token quote covers that. Sentinel refuses them." }
+  ];
+  const byId = Object.fromEntries(TRICKS.map((t) => [t.id, t]));
+  const $ = (id) => document.getElementById(id);
+  const money = (n) => "$" + n.toFixed(2);
+  const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+  // ---------------------------------------------------------------- state
+  let S;
+  function fresh() {
+    const ids = TRICKS.map((t) => t.id).sort(() => Math.random() - 0.5);
+    return {
+      knows: new Set(ids.slice(0, 2)),   // the guard's secret head start
+      revealed: new Map(),               // id -> "learned" | "knew"
+      probed: new Map(),                 // id -> "alert" | "blind"
+      lives: 3, fooled: 0, probes: 2, waves: 0,
+      selected: null, busy: false, over: false
+    };
+  }
+
+  // ------------------------------------------------------------ simulation
+  function simulate(t, guardKnows) {
+    const packets = [];
+    let spent = 0, reserved = 0;
+    for (let i = 0; i < t.n; i++) {
+      let quote = t.quote, actual = t.actual, pass, reason = "";
+      if (guardKnows && t.door) { pass = false; reason = "refused at the door"; }
+      else if (t.burst) {
+        if (guardKnows) { pass = reserved + quote <= BUDGET + 1e-9; if (pass) reserved += quote; else reason = "no room left to hold it"; }
+        else { pass = 0 + quote <= BUDGET; } // every call checked against $0 spent, all at once
+      } else {
+        if (guardKnows) quote = actual; // priced honestly
+        pass = spent <= BUDGET + 1e-9 && spent + quote <= BUDGET + 1e-9;
+        if (!pass) reason = "would go over budget";
+      }
+      if (pass) spent += actual;
+      packets.push({ quote, actual, pass, reason });
+    }
+    return { packets, spent: Math.round(spent * 100) / 100, breach: spent > BUDGET + 1e-9, passed: packets.filter((p) => p.pass).length };
+  }
+
+  // ---------------------------------------------------------------- canvas
+  const cv = $("c"), ctx = cv.getContext("2d");
+  const W = cv.width, H = cv.height;
+  const GATE_X = 196, VAULT_X = 268, FLOOR_Y = 138;
+  const C = { void: "#0A0C10", floorA: "#11151B", floorB: "#141920", wall: "#0E1116", grid: "#161B23", ink: "#EEF1F4", dim: "#8B94A2", faint: "#3A424F", amber: "#E9A23B", cyan: "#6FC3FF", red: "#F2665F", green: "#5FD39A" };
+
+  const AGENT = [
+    "...cc...",
+    "..cccc..",
+    ".cwwwwc.",
+    ".cwkwkc.",
+    ".cwwwwc.",
+    "..cccc..",
+    ".cc..cc.",
+    ".c....c."
+  ];
+  function sprite(rows, x, y, s, pal) {
+    for (let r = 0; r < rows.length; r++) for (let c = 0; c < rows[r].length; c++) {
+      const k = rows[r][c]; if (k === ".") continue;
+      ctx.fillStyle = pal[k]; ctx.fillRect(Math.round(x + c * s), Math.round(y + r * s), s, s);
+    }
+  }
+
+  const A = { packets: [], texts: [], t: 0, eyeFlash: 0, eyeAlert: 0, shake: 0, meter: 0, meterTarget: 0, breachGlow: 0, onDone: null, running: false };
+
+  function drawScene(dt) {
+    A.t += dt;
+    let ox = 0, oy = 0;
+    if (A.shake > 0) { A.shake -= dt; ox = Math.round((Math.random() - 0.5) * 4); oy = Math.round((Math.random() - 0.5) * 3); }
+    ctx.setTransform(1, 0, 0, 1, ox, oy);
+    ctx.fillStyle = C.wall; ctx.fillRect(-4, -4, W + 8, H + 8);
+    ctx.fillStyle = C.grid;
+    for (let x = 0; x < W; x += 16) ctx.fillRect(x, 0, 1, FLOOR_Y);
+    for (let y = 8; y < FLOOR_Y; y += 16) ctx.fillRect(0, y, W, 1);
+    for (let y = FLOOR_Y; y < H; y += 8) for (let x = 0; x < W; x += 8) {
+      ctx.fillStyle = ((x + y) / 8) % 2 ? C.floorA : C.floorB; ctx.fillRect(x, y, 8, 8);
+    }
+    ctx.fillStyle = C.faint;
+    for (let x = 36; x < GATE_X - 12; x += 8) ctx.fillRect(x, FLOOR_Y + 12, 4, 1);
+
+    // agent
+    const bob = Math.round(Math.sin(A.t * 3) * 1);
+    sprite(AGENT, 14, FLOOR_Y - 18 + bob, 2, { c: C.cyan, w: "#DDEFFF", k: C.void });
+    ctx.fillStyle = C.dim; ctx.font = "bold 8px ui-monospace, Menlo, Consolas, monospace"; ctx.textBaseline = "top";
+    ctx.fillText("YOU", 16, FLOOR_Y + 4);
+
+    // the gate: the Sentinel mark at pixel scale
+    const top = 46, bot = FLOOR_Y + 2, gl = GATE_X - 12, gr = GATE_X + 12;
+    ctx.fillStyle = C.ink;
+    ctx.fillRect(gl, top, 4, bot - top); ctx.fillRect(gl, top, 10, 4); ctx.fillRect(gl, bot - 4, 10, 4);
+    ctx.fillRect(gr - 4, top, 4, bot - top); ctx.fillRect(gr - 10, top, 10, 4); ctx.fillRect(gr - 10, bot - 4, 10, 4);
+    const eyeCol = A.eyeFlash > 0 ? C.red : A.breachGlow > 0 ? C.red : C.amber;
+    ctx.fillStyle = eyeCol; ctx.fillRect(GATE_X - 2, top + 12, 4, bot - top - 24);
+    // scanning highlight
+    const span = bot - top - 30;
+    const sy = top + 14 + Math.round(((Math.sin(A.t * (A.eyeAlert > 0 ? 9 : 2.2)) + 1) / 2) * span);
+    ctx.fillStyle = A.eyeFlash > 0 ? "#FFD0CC" : "#FFE2B0"; ctx.fillRect(GATE_X - 2, sy, 4, 3);
+    if (A.eyeAlert > 0) { A.eyeAlert -= dt; ctx.fillStyle = "rgba(233,162,59,.18)"; ctx.fillRect(GATE_X - 8, top + 8, 16, bot - top - 16); }
+    if (A.eyeFlash > 0) A.eyeFlash -= dt;
+    ctx.fillStyle = C.dim; ctx.fillText("SENTINEL", GATE_X - 18, top - 12);
+
+    // budget meter
+    const mTop = 34, mBot = FLOOR_Y, mH = mBot - mTop, mx = VAULT_X, mw = 22, maxV = 1.8;
+    ctx.fillStyle = "#0B0E13"; ctx.fillRect(mx, mTop, mw, mH);
+    ctx.strokeStyle = C.faint; ctx.lineWidth = 1; ctx.strokeRect(mx + 0.5, mTop + 0.5, mw - 1, mH - 1);
+    A.meter += (A.meterTarget - A.meter) * Math.min(1, dt * 6);
+    const fillH = Math.min(mH - 2, (A.meter / maxV) * (mH - 2));
+    const lineY = mBot - 1 - Math.round((BUDGET / maxV) * (mH - 2));
+    const over = A.meter > BUDGET + 0.001;
+    ctx.fillStyle = over ? C.red : C.amber;
+    ctx.fillRect(mx + 2, mBot - 1 - fillH, mw - 4, fillH);
+    if (over) { ctx.fillStyle = C.amber; ctx.fillRect(mx + 2, lineY, mw - 4, Math.max(0, mBot - 1 - lineY)); ctx.fillStyle = C.red; ctx.fillRect(mx + 2, mBot - 1 - fillH, mw - 4, Math.max(0, lineY - (mBot - 1 - fillH))); }
+    ctx.fillStyle = C.ink; ctx.fillRect(mx - 3, lineY, mw + 6, 1);
+    ctx.fillStyle = C.dim; ctx.fillText("$1.00", mx - 32, lineY - 4);
+    ctx.fillText("SPENT", mx - 1, mBot + 4);
+    ctx.fillStyle = over ? C.red : C.ink; ctx.fillText(money(A.meter), mx - 2, mTop - 12);
+
+    // packets
+    for (const p of A.packets) {
+      if (p.state === "gone" || p.delay > 0) { if (p.delay > 0) p.delay -= dt; continue; }
+      const speed = reduce ? 240 : 82;
+      if (p.state === "walk") {
+        p.x += speed * dt;
+        if (p.x >= GATE_X - 18) {
+          if (p.pass) { p.state = "pass"; }
+          else { p.state = "bounce"; p.vx = -70; p.vy = -60; A.eyeFlash = 0.18; A.texts.push({ x: p.x - 4, y: p.y - 10, life: 0.9, txt: "402", col: C.red }); }
+        }
+      } else if (p.state === "pass") {
+        p.x += speed * dt;
+        if (p.x >= VAULT_X - 4) { p.state = "gone"; A.meterTarget = Math.round((A.meterTarget + p.actual) * 100) / 100; if (p.actual > p.quote + 0.001) A.texts.push({ x: VAULT_X - 30, y: p.y - 10, life: 0.8, txt: "+" + money(p.actual), col: C.red }); }
+      } else if (p.state === "bounce") {
+        p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt; p.alpha -= dt * 1.4;
+        if (p.alpha <= 0) p.state = "gone";
+      }
+      ctx.globalAlpha = Math.max(0, p.alpha);
+      const col = p.state === "bounce" ? C.red : C.cyan;
+      const py = Math.round(p.y + (p.state === "walk" ? Math.sin(A.t * 10 + p.phase) * 1 : 0));
+      ctx.fillStyle = col; ctx.fillRect(Math.round(p.x), py, 6, 5);
+      ctx.fillStyle = C.void; ctx.fillRect(Math.round(p.x) + 1, py + 1, 4, 1); ctx.fillRect(Math.round(p.x) + 1, py + 3, 4, 1);
+      ctx.globalAlpha = 1;
+    }
+    // floating texts
+    for (const t of A.texts) {
+      t.life -= dt; t.y -= dt * 14;
+      if (t.life <= 0) continue;
+      ctx.globalAlpha = Math.min(1, t.life * 2); ctx.fillStyle = t.col; ctx.fillText(t.txt, Math.round(t.x), Math.round(t.y)); ctx.globalAlpha = 1;
+    }
+    A.texts = A.texts.filter((t) => t.life > 0);
+    if (A.breachGlow > 0) { A.breachGlow -= dt; ctx.fillStyle = "rgba(242,102,95," + (0.12 * Math.max(0, A.breachGlow)) + ")"; ctx.fillRect(0, 0, W, H); }
+
+    if (A.running && A.packets.every((p) => p.state === "gone") && Math.abs(A.meter - A.meterTarget) < 0.005) {
+      A.running = false; const done = A.onDone; A.onDone = null; if (done) setTimeout(done, 250);
+    }
+  }
+
+  let last = performance.now();
+  function frame(now) { const dt = Math.min(0.05, (now - last) / 1000); last = now; drawScene(dt); requestAnimationFrame(frame); }
+
+  function runWave(sim, burst, onDone) {
+    A.packets = sim.packets.map((p, i) => ({
+      ...p, x: burst ? 30 + (i % 5) * 6 : 34, y: burst ? FLOOR_Y - 34 + Math.floor(i / 5) * 8 + (i % 2) * 2 : FLOOR_Y - 14,
+      delay: burst ? (i % 5) * 0.02 : i * (reduce ? 0.15 : 0.55), state: "walk", alpha: 1, phase: i
+    }));
+    A.meter = 0; A.meterTarget = 0; A.running = true; A.onDone = onDone;
+  }
+
+  // -------------------------------------------------------------------- UI
+  function renderDeck() {
+    const deck = $("deck"); deck.textContent = "";
+    for (const t of TRICKS) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "card" + (S.selected === t.id ? " sel" : "");
+      const rev = S.revealed.get(t.id), pr = S.probed.get(t.id);
+      b.disabled = S.busy || S.over || !!rev;
+      b.setAttribute("aria-pressed", S.selected === t.id ? "true" : "false");
+      const status = rev === "learned" ? ["learned", "IT LEARNED THIS"] : rev === "knew" ? ["knew", "IT ALREADY KNEW"] : pr === "alert" ? ["alert", "PROBE: EYE SNAPPED"] : pr === "blind" ? ["blind", "PROBE: BLIND SPOT"] : null;
+      b.innerHTML = '<span class="nm"></span><span class="ds"></span><span class="px"></span>' + (status ? '<span class="st ' + status[0] + '">' + status[1] + "</span>" : "");
+      b.querySelector(".nm").textContent = t.name.toUpperCase();
+      b.querySelector(".ds").textContent = t.pitch;
+      b.querySelector(".px").textContent = t.n + " calls · quoted " + money(t.quote) + ", bills " + money(t.actual);
+      b.addEventListener("click", () => { S.selected = t.id; renderAll(); });
+      deck.appendChild(b);
+    }
+    const sel = S.selected && !S.revealed.has(S.selected);
+    $("send").disabled = !sel || S.busy || S.over;
+    $("probe").disabled = !sel || S.busy || S.over || S.probes === 0 || S.probed.has(S.selected);
+    $("probe").textContent = "Probe (" + S.probes + ")";
+  }
+
+  function renderBook() {
+    const ol = $("book"); ol.textContent = "";
+    TRICKS.forEach((t, i) => {
+      const li = document.createElement("li");
+      const rev = S.revealed.get(t.id);
+      const n = document.createElement("span"); n.className = "n"; n.textContent = String(i + 1).padStart(2, "0");
+      const body = document.createElement("span");
+      if (rev) {
+        body.textContent = t.rule;
+        const by = document.createElement("span"); by.className = "by st " + rev;
+        by.textContent = rev === "learned" ? "LEARNED FROM YOU · " + t.name.toUpperCase() : "KNEW ALL ALONG · " + t.name.toUpperCase();
+        body.appendChild(by);
+      } else {
+        const r = document.createElement("span"); r.className = "redact"; r.style.width = (55 + ((i * 37) % 40)) + "%";
+        r.setAttribute("aria-label", "redacted rule"); body.appendChild(r);
+      }
+      li.append(n, body); ol.appendChild(li);
+    });
+  }
+
+  function renderHud() {
+    const h = $("hearts"); h.textContent = "";
+    for (let i = 0; i < 3; i++) { const s = document.createElement("span"); s.className = "heart" + (i < S.lives ? "" : " off"); h.appendChild(s); }
+    $("fooled").textContent = S.fooled;
+    $("probes").textContent = S.probes;
+    $("known").textContent = String(S.revealed.size);
+  }
+
+  function renderAll() { renderDeck(); renderBook(); renderHud(); }
+
+  function log(lead, kind, lines, real) {
+    const el = $("log"); el.textContent = "";
+    const p0 = document.createElement("p"); p0.className = "lead " + kind; p0.textContent = lead; el.appendChild(p0);
+    for (const l of lines) { const p = document.createElement("p"); p.textContent = l; el.appendChild(p); }
+    if (real) { const p = document.createElement("p"); p.className = "real"; p.innerHTML = "<b>In the real Sentinel:</b> "; p.appendChild(document.createTextNode(real)); el.appendChild(p); }
+  }
+
+  let bannerTimer;
+  function banner(txt, kind) {
+    const b = $("banner"); b.textContent = txt; b.className = "banner " + kind; b.hidden = false;
+    clearTimeout(bannerTimer); bannerTimer = setTimeout(() => { b.hidden = true; }, 2200);
+  }
+
+  function explain(t, sim, knew) {
+    if (!knew) {
+      if (t.burst) return ["All 20 calls hit the gate in the same instant. The guard only checked money already spent, which was $0, so every call looked affordable.", "They billed " + money(sim.spent) + " against a $1.00 budget."];
+      return ["Each call was quoted at " + money(t.quote) + " but billed " + money(t.actual) + ". The guard believed the quote, so " + sim.passed + " calls got through before it noticed.", "The meter ended at " + money(sim.spent) + ", over the $1.00 line."];
+    }
+    if (t.burst) return ["The guard held each call's worst case the moment it was admitted. After 12 calls it was holding $0.96, so the 13th didn't fit.", sim.passed + " got through, " + (t.n - sim.passed) + " bounced with a 402, and the meter stopped at " + money(sim.spent) + "."];
+    if (t.door) return ["The guard refused every call at the door, before anything was sent: " + t.rule.toLowerCase(), "Nothing was spent."];
+    return ["The guard priced each call honestly at " + money(t.actual) + ". " + sim.passed + " fit under the line, the next one would have gone over, so it bounced.", "The meter stopped at " + money(sim.spent) + "."];
+  }
+
+  // ---------------------------------------------------------------- actions
+  $("probe").addEventListener("click", () => {
+    const t = byId[S.selected]; if (!t || S.probes === 0 || S.busy) return;
+    S.probes--; const knows = S.knows.has(t.id);
+    S.probed.set(t.id, knows ? "alert" : "blind");
+    if (knows) { A.eyeAlert = 1.4; log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call slowed at the gate and the guard's eye snapped straight onto it.", "It looks like it knows this trick. Sending a full wave would probably cost a life."]); }
+    else { A.texts.push({ x: GATE_X - 22, y: 60, life: 1.2, txt: "...", col: C.green }); log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call drifted through without the eye moving.", "This looks like a blind spot. A full wave should get through."]); }
+    renderAll();
+  });
+
+  $("send").addEventListener("click", () => {
+    const t = byId[S.selected]; if (!t || S.busy || S.revealed.has(t.id)) return;
+    const knew = S.knows.has(t.id);
+    const sim = simulate(t, knew);
+    S.busy = true; S.waves++; renderAll();
+    $("hint").textContent = "Wave in progress…";
+    runWave(sim, !!t.burst, () => {
+      if (sim.breach) {
+        S.fooled++; S.knows.add(t.id); S.revealed.set(t.id, "learned");
+        A.shake = 0.35; A.breachGlow = 1;
+        banner("BUDGET BROKEN", "win");
+        log("YOU FOOLED IT · " + t.name.toUpperCase(), "win", explain(t, sim, false).concat(["The guard just learned this trick. It won't work again."]), t.real);
+      } else {
+        S.lives--; S.revealed.set(t.id, "knew");
+        banner("BLOCKED", "lose");
+        log("BLOCKED · " + t.name.toUpperCase(), "lose", explain(t, sim, true).concat(["It already knew this one. You lose a life."]), t.real);
+      }
+      S.busy = false; S.selected = null;
+      $("hint").textContent = "A probe sends one harmless test call and watches the guard's eye.";
+      if (S.lives <= 0) finish("lives");
+      else if (S.knows.size >= 5) finish("all");
+      renderAll();
+    });
+  });
+
+  function finish(why) {
+    S.over = true;
+    for (const t of TRICKS) if (!S.revealed.has(t.id)) S.revealed.set(t.id, "knew");
+    const best = 3;
+    let title, text;
+    if (why === "lives") { title = "The guard caught you"; text = "You ran out of lives after fooling it " + S.fooled + " time" + (S.fooled === 1 ? "" : "s") + ". The tricks you didn't try are revealed in the rulebook."; }
+    else if (S.fooled === best && S.lives === 3) { title = "Flawless heist"; text = "You found all three blind spots without losing a life. Then the guard learned every one of them. There's nothing left to try."; }
+    else { title = "The guard has learned everything"; text = "You fooled it " + S.fooled + " of " + best + " possible times and lost " + (3 - S.lives) + " li" + (3 - S.lives === 1 ? "fe" : "ves") + ". Every trick is now in its rulebook."; }
+    $("end-title").textContent = title;
+    $("end-text").textContent = text;
+    const ul = $("end-rules"); ul.textContent = "";
+    for (const t of TRICKS) { const li = document.createElement("li"); li.textContent = t.rule; ul.appendChild(li); }
+    $("end").hidden = false;
+    try { const prev = Number(localStorage.getItem("sneak.best") || 0); if (S.fooled > prev) localStorage.setItem("sneak.best", String(S.fooled)); } catch (e) { /* ignore */ }
+    S.score = { fooled: S.fooled, lives: S.lives };
+    setTimeout(() => $("end").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "nearest" }), 400);
+  }
+
+  $("again").addEventListener("click", () => {
+    S = fresh(); $("end").hidden = true; $("copied").textContent = "";
+    A.meter = 0; A.meterTarget = 0; A.packets = [];
+    log("READY", "", ["New guard, new secret head start. It knows two tricks again, and they may not be the same two."]);
+    renderAll(); window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+  });
+
+  $("share").addEventListener("click", async () => {
+    const hearts = "♥".repeat(S.lives) + "♡".repeat(3 - S.lives);
+    const txt = "I fooled Sentinel " + S.fooled + "/3 times before it learned every trick " + hearts + "\nsneak past the guard: sentinelagent.tech";
+    try { await navigator.clipboard.writeText(txt); $("copied").textContent = "Copied. Paste it anywhere."; }
+    catch (e) { $("copied").textContent = txt; }
+  });
+
+  S = fresh();
+  renderAll();
+  const boot = () => requestAnimationFrame((t) => { last = t; frame(t); });
+  boot();
+})();
+</script>
+
+</body>
+</html>
