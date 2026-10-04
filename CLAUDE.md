@@ -41,6 +41,7 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   `fixtures/` stays frozen.
 - Every other implementation directory (`src/worker/`, `src/orbio/`, `src/ledger/`,
   `src/runner/`, `src/core/`) stays Codex's. Touch them only with a new recorded decision.
+- By scope-owner decision on 2026-10-04, Claude Code applied the scope owner's reviewed Sneak Past Sentinel arcade patch to `src/game/` and its test on `feat/sneak-arcade`; that authorisation covered that change only and `src/game/` otherwise stays Codex's.
 
 ## 2. Adversarial review (standing)
 
