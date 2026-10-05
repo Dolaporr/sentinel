@@ -49,6 +49,8 @@ export interface HostedGameRoutesConfig {
   mission?: (policy: GamePolicy) => Mission;
   /** Sneak prize amounts. Production reads them from the environment, defaulting to $0. */
   sneakPrizes?: SneakPrizeConfig;
+  /** Opens the Sneak prize admin. Production uses SENTINEL_HOSTED_ADMIN_TOKEN, the same bearer as /admin. */
+  adminToken?: string;
 }
 
 /** The mounted shape; HostedGateway only knows how to offer it a request. */
@@ -158,7 +160,8 @@ export function createHostedGameRoutes(config: HostedGameRoutesConfig): HostedGa
   const sneak = createSneakRoutes({
     store: config.store,
     logPath: join(dirname(config.dataPath), "sneak-events.jsonl"),
-    prizes: config.sneakPrizes ?? prizeConfigFromEnv(process.env)
+    prizes: config.sneakPrizes ?? prizeConfigFromEnv(process.env),
+    adminToken: config.adminToken ?? process.env.SENTINEL_HOSTED_ADMIN_TOKEN
   });
 
   return {
