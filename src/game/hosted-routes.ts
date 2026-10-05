@@ -8,6 +8,7 @@
 import type { IncomingMessage, OutgoingHttpHeaders, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { readBody, sendJson, worstCaseUsd } from "../proxy/http.js";
@@ -22,6 +23,8 @@ import { GameRoundRunner } from "./round-runner.js";
 import { GameEventStore } from "./store.js";
 import type { GamePolicy, GameSeason, GameTransport } from "./types.js";
 import { dispatchGameAdmitted } from "./hosted-dispatch.js";
+import { createSneakRoutes } from "./sneak/routes.js";
+import { prizeConfigFromEnv, type SneakPrizeConfig } from "./sneak/prizes.js";
 import type { JsonObject } from "../orbio/types.js";
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -44,6 +47,8 @@ export interface HostedGameRoutesConfig {
   safetyMultiplier: number;
   /** Test-only construction seam; production uses the sealed default mission. */
   mission?: (policy: GamePolicy) => Mission;
+  /** Sneak prize amounts. Production reads them from the environment, defaulting to $0. */
+  sneakPrizes?: SneakPrizeConfig;
 }
 
 /** The mounted shape; HostedGateway only knows how to offer it a request. */
@@ -148,11 +153,17 @@ export function createHostedGameRoutes(config: HostedGameRoutesConfig): HostedGa
   const limiter = new RateLimiter();
   // Read once at mount. A static page: no token, key or player data is templated into it.
   const playPage = readFileSync(PLAY_PAGE_PATH, "utf8");
-  // Browser-only arcade game: no calls, no key, no pool.
+  // The arcade page draws; the server decides every run. No model calls, no key, no pool.
   const sneakPage = readFileSync(SNEAK_PAGE_PATH, "utf8");
+  const sneak = createSneakRoutes({
+    store: config.store,
+    logPath: join(dirname(config.dataPath), "sneak-events.jsonl"),
+    prizes: config.sneakPrizes ?? prizeConfigFromEnv(process.env)
+  });
 
   return {
     async handle(req, res, url, method) {
+      if (await sneak.handle(req, res, url, method)) return true;
       if ((method === "GET" || method === "HEAD") && (url === "/sneak" || url === "/sneak/")) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" });
         res.end(method === "HEAD" ? undefined : sneakPage);
