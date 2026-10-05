@@ -15,6 +15,7 @@ import { commitmentFor, SneakRun, TRICKS } from "../../src/game/sneak/engine.js"
 import { createSneakRoutes, type SneakTokenStore } from "../../src/game/sneak/routes.js";
 import { DEFAULT_PRIZES, prizeConfigFromEnv, type SneakEvent, type SneakPrizeConfig } from "../../src/game/sneak/prizes.js";
 import { userTokenHashFromHeader } from "../../src/proxy/hosted/secrets.js";
+import { keccak256Hex, parseWallet } from "../../src/game/sneak/wallet.js";
 
 let failures = 0;
 const check = (name: string, condition: boolean) => {
@@ -76,8 +77,8 @@ const REVOKED = mint("snt_revoked_0123456789", "tok_revoked");
 (tokens.get(userTokenHashFromHeader(`Bearer ${REVOKED}`) as string) as { revokedAt: string | null }).revokedAt = new Date().toISOString();
 
 let clock = Date.UTC(2026, 9, 5, 12, 0, 0);
-async function serve(logPath: string, prizes: SneakPrizeConfig): Promise<{ base: string; server: Server }> {
-  const routes = createSneakRoutes({ store, logPath, prizes, clock: () => clock, drawSecret: () => SECRET });
+async function serve(logPath: string, prizes: SneakPrizeConfig, adminToken?: string): Promise<{ base: string; server: Server }> {
+  const routes = createSneakRoutes({ store, logPath, prizes, adminToken, clock: () => clock, drawSecret: () => SECRET });
   const server = createServer(async (req, res) => {
     const url = (req.url ?? "").split("?")[0];
     if (!(await routes.handle(req, res, url, req.method ?? "GET"))) { res.writeHead(404); res.end(); }
@@ -167,12 +168,86 @@ const readLog = (path: string): SneakEvent[] => readFileSync(path, "utf8").split
   restarted.server.close();
 }
 
+// ------------------------------------------------------------- wallets
+{
+  check("Keccak-256 matches the empty-input test vector", keccak256Hex(new Uint8Array()) === "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470");
+  check("Keccak-256 matches the \"abc\" test vector", keccak256Hex(new TextEncoder().encode("abc")) === "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45");
+  const vectors = ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed", "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359", "0xdbF03B407c01E7cD3CBea99509d93f8DDDC8C6FB", "0xD1220A0cf47c7B9Be7A2E6BA89F429762e7b9aDb"];
+  check("the EIP-55 test addresses are accepted as written", vectors.every((a) => { const r = parseWallet(a); return r.ok && r.address === a; }));
+  check("an all-lowercase address is accepted and stored checksummed", vectors.every((a) => { const r = parseWallet(a.toLowerCase()); return r.ok && r.address === a; }));
+  const flip = (a: string) => { const i = [...a].findIndex((c, k) => k > 1 && /[a-fA-F]/.test(c)); return a.slice(0, i) + (a[i] === a[i].toUpperCase() ? a[i].toLowerCase() : a[i].toUpperCase()) + a.slice(i + 1); };
+  check("a one-letter case typo fails the checksum", vectors.every((a) => { const r = parseWallet(flip(a)); return !r.ok && r.reason === "checksum"; }));
+  check("wrong length, non-hex, missing 0x and the zero address are refused", ["0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAe", "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAeg", "5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed00", 42].every((a) => !parseWallet(a).ok) && (parseWallet("0x" + "0".repeat(40)) as { reason?: string }).reason === "zero");
+}
+
+// --------------------------------------------- claims and the admin list
+{
+  const ADMIN_TOKEN = "sneak-admin-test-secret-0123456789abcdef";
+  const GOOD = "0x5aAeb6053F3E94C9b9A09f33669435E7Ef1BeAed";
+  const logPath = join(root, "claims", "sneak-events.jsonl");
+  const on: SneakPrizeConfig = { flawlessUsd: 1, oneLifeLostUsd: 0.5, dailyCapUsd: 5 };
+  const { base, server } = await serve(logPath, on, ADMIN_TOKEN);
+  const getAdmin = (token?: string) => fetch(`${base}/sneak/api/admin/prizes`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
+
+  const run = await post(base, "/sneak/api/run", { mode: "prize" }, EVE);
+  const runId = run.json.runId as string;
+  const won = await playFlawless(base, runId, EVE);
+  check("the winner gets the prize's runId to claim it with", won.prize?.runId === runId && won.prize.amountUsd === 1);
+  check("a malformed wallet is refused", (await post(base, "/sneak/api/claim", { runId, wallet: "0x123" }, EVE)).json.error?.code === "invalid_wallet_format");
+  check("the zero address is refused", (await post(base, "/sneak/api/claim", { runId, wallet: "0x" + "0".repeat(40) }, EVE)).json.error?.code === "invalid_wallet_zero");
+  check("a checksum typo is refused", (await post(base, "/sneak/api/claim", { runId, wallet: "0x5aaeb6053F3E94C9b9A09f33669435E7Ef1BeAed" }, EVE)).json.error?.code === "invalid_wallet_checksum");
+  check("another token cannot set the winner's wallet", (await post(base, "/sneak/api/claim", { runId, wallet: GOOD }, BOB)).status === 403);
+  check("no token cannot set a wallet", (await post(base, "/sneak/api/claim", { runId, wallet: GOOD })).status === 401);
+  check("an unknown prize cannot be claimed", (await post(base, "/sneak/api/claim", { runId: "x".repeat(24), wallet: GOOD }, EVE)).status === 404);
+  const claimed = await post(base, "/sneak/api/claim", { runId, wallet: GOOD.toLowerCase() }, EVE);
+  check("the winner saves a wallet, stored checksummed", claimed.status === 200 && claimed.json.prize.wallet === GOOD);
+  const mine = (await post(base, "/sneak/api/my-prizes", {}, EVE)).json.prizes as Json[];
+  check("the winner can find their prize and wallet later", mine.length === 1 && mine[0].wallet === GOOD && mine[0].paid === false);
+  check("a player sees only their own prizes", ((await post(base, "/sneak/api/my-prizes", {}, BOB)).json.prizes as Json[]).length === 0);
+
+  const second = await post(base, "/sneak/api/run", { mode: "prize" }, CARA);
+  await playFlawless(base, second.json.runId, CARA);
+
+  check("the admin list needs the admin token", (await getAdmin()).status === 401);
+  check("a player token cannot open the admin list", (await getAdmin(EVE)).status === 401);
+  const list = await (await getAdmin(ADMIN_TOKEN)).json() as Json;
+  const eve = (list.prizes as Json[]).find((p) => p.runId === runId);
+  check("the admin list shows handle, amount and wallet", eve?.player === "tok_eve" && eve.amountUsd === 1 && eve.wallet === GOOD && eve.paidAt === null);
+  check("the admin totals split unpaid from ready to pay", list.unpaidUsd === 2 && list.unpaidWithWalletUsd === 1 && list.unpaidCount === 2);
+  const adminPost = (body: unknown, token = ADMIN_TOKEN) => post(base, "/sneak/api/admin/prizes/paid", body, token);
+  check("a prize with no wallet cannot be marked paid", (await adminPost({ runId: second.json.runId })).json.error?.code === "no_wallet");
+  check("a player token cannot mark a prize paid", (await adminPost({ runId }, EVE)).status === 401);
+  const paid = await adminPost({ runId, tx: "0xfeedbeef" });
+  check("the operator marks a prize paid, with the tx", paid.status === 200 && paid.json.prize.tx === "0xfeedbeef" && !!paid.json.prize.paidAt);
+  check("a prize cannot be marked paid twice", (await adminPost({ runId })).json.error?.code === "already_paid");
+  check("a paid prize's wallet can no longer change", (await post(base, "/sneak/api/claim", { runId, wallet: "0xfB6916095ca1df60bB79Ce92cE3Ea74c37c5d359" }, EVE)).json.error?.code === "already_paid");
+  server.close();
+
+  const restarted = await serve(logPath, on, ADMIN_TOKEN);
+  const after = await (await fetch(`${restarted.base}/sneak/api/admin/prizes`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })).json() as Json;
+  const eveAfter = (after.prizes as Json[]).find((p) => p.runId === runId);
+  check("wallets and payments survive a restart", eveAfter?.wallet === GOOD && eveAfter.tx === "0xfeedbeef" && after.unpaidUsd === 1);
+  const page = await fetch(`${restarted.base}/sneak/admin`);
+  const html = await page.text();
+  check("the admin page is served, unindexed, with no token or prize data in it", page.status === 200 && page.headers.get("x-robots-tag") === "noindex" && !html.includes(ADMIN_TOKEN) && !html.includes(GOOD) && !html.includes("tok_eve"));
+  check("the admin page calls only the admin API and never stores the token", (html.match(/fetch\(/g) ?? []).length === 1 && html.includes('window.fetch("/sneak/api/admin" + path') && !/localStorage|sessionStorage/.test(html));
+  restarted.server.close();
+
+  const closed = await serve(join(root, "closed", "sneak-events.jsonl"), on);
+  check("with no admin token configured, the prize admin stays closed", (await fetch(`${closed.base}/sneak/api/admin/prizes`, { headers: { authorization: `Bearer ${ADMIN_TOKEN}` } })).status === 503);
+  closed.server.close();
+  const weak = await serve(join(root, "weak", "sneak-events.jsonl"), on, "short");
+  check("a too-short admin token keeps the prize admin closed", (await fetch(`${weak.base}/sneak/api/admin/prizes`, { headers: { authorization: "Bearer short" } })).status === 503);
+  weak.server.close();
+}
+
 // -------------------------------------------------------------------- page
 {
   const html = readFileSync(fileURLToPath(new URL("../../src/game/sneak.html", import.meta.url)), "utf8");
   check("the page holds no game rules or secret: no simulation, no secret draw, no trick table", !/simulateWave|function simulate|drawSecret|guardKnows\s*\)|knows:\s*new Set|actual:\s*0\.\d/.test(html) && !TRICKS.some((t) => html.includes(t.real)));
   check("the page calls only its own API", (html.match(/fetch\(/g) ?? []).length === 1 && html.includes('window.fetch("/sneak/api" + path'));
   check("the page never stores a token", !/localStorage\.setItem\([^)]*token|sessionStorage/.test(html));
+  check("the page asks a winner for a wallet and can find past prizes", html.includes('id="claim"') && html.includes('api("/claim"') && html.includes('api("/my-prizes"'));
 }
 
 rmSync(root, { recursive: true, force: true });

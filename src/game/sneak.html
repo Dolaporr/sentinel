@@ -120,6 +120,17 @@
   .prize-form input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
   .prize-form .hint { margin: 0; }
   .prize-line { color: var(--amber); }
+  .claim { display: flex; flex-direction: column; gap: 8px; border: 2px solid var(--amber); padding: 12px 14px; margin: 4px 0 12px; }
+  .claim label { font-family: var(--pixel); font-size: 11px; letter-spacing: .08em; color: var(--amber); text-transform: uppercase; }
+  .claim .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .claim input, .my-list input { flex: 1 1 260px; min-width: 0; font: inherit; color: var(--ink); background: var(--void); border: 2px solid var(--line); padding: 9px 10px; }
+  .claim input:focus-visible, .my-list input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .claim .hint, .my-list .hint { margin: 0; }
+  .claim .hint.bad, .my-list .hint.bad { color: var(--red); }
+  .my-list { display: flex; flex-direction: column; gap: 10px; }
+  .my-list .item { display: flex; flex-direction: column; gap: 6px; border-top: 1px dashed var(--line); padding-top: 8px; font-size: 13px; }
+  .my-list .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .my-list code { overflow-wrap: anywhere; color: var(--ink); }
   .seal { font-size: 11.5px; color: var(--faint); overflow-wrap: anywhere; }
   [hidden] { display: none !important; }
 
@@ -164,8 +175,9 @@
   </div>
   <form class="prize-form" id="prize-form" hidden>
     <label for="token">Your Sentinel token</label>
-    <div class="row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="snt_…"><button class="btn go" type="submit">Start prize run</button></div>
+    <div class="row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="snt_…"><button class="btn go" type="submit">Start prize run</button><button class="btn" id="my-prizes" type="button">Find my prizes</button></div>
     <p class="hint" id="prize-note"></p>
+    <div id="my-list" class="my-list" hidden></div>
   </form>
 
   <div class="stage">
@@ -202,6 +214,11 @@
       <h3 id="end-title">The guard has learned everything</h3>
       <p id="end-text"></p>
       <p id="end-prize" class="prize-line"></p>
+      <form class="claim" id="claim" hidden>
+        <label for="wallet">Where should we send it? Your Robinhood Chain wallet address</label>
+        <div class="row"><input id="wallet" autocomplete="off" spellcheck="false" placeholder="0x…"><button class="btn go" type="submit">Save wallet</button></div>
+        <p class="hint" id="claim-note">We check the address before saving it. Payouts are sent by hand, in $CREDIT, to this address.</p>
+      </form>
       <p id="end-seal" class="seal"></p>
       <p>Everything in the rulebook is a rule the real Sentinel runs before every model call:</p>
       <ul id="end-rules"></ul>
@@ -553,6 +570,9 @@
     $("end-title").textContent = title;
     $("end-text").textContent = text;
     $("end-prize").textContent = S.mode === "prize" && prize ? PRIZE_TEXT[prize.status](prize) : "Practice run. Practice pays nothing.";
+    S.claimRun = S.mode === "prize" && prize && prize.amountUsd > 0 ? prize.runId : null;
+    $("claim").hidden = !S.claimRun; $("claim-note").className = "hint";
+    $("claim-note").textContent = "We check the address before saving it. Payouts are sent by hand, in $CREDIT, to this address.";
     const knew = end.reveal.knows.map((id) => byId[id] ? byId[id].name : id).join(" and ");
     $("end-seal").textContent = "The guard started out knowing " + knew + ". That was sealed before your first move as sha256 " + S.commitment + " (salt " + end.reveal.salt + ").";
     const ul = $("end-rules"); ul.textContent = "";
@@ -567,6 +587,53 @@
       $("end-seal").textContent += digest === S.commitment ? " Your browser checked the seal: it matches." : " Your browser checked the seal: it does NOT match.";
     } catch (e) { /* no subtle crypto here; the values above can be checked by hand */ }
   }
+
+  const WALLET_ERRORS = {
+    invalid_wallet_format: "A Robinhood Chain address is 0x followed by 40 letters and digits (0-9, a-f).",
+    invalid_wallet_zero: "That's the zero address. Paste your own wallet address.",
+    invalid_wallet_checksum: "That address has a typo: its capital letters don't match its checksum. Copy it again from your wallet.",
+    already_paid: "This prize has already been paid, so its wallet can't change."
+  };
+  async function saveWallet(runId, address, note) {
+    try {
+      const r = await api("/claim", { runId, wallet: address }, true);
+      note.className = "hint"; note.textContent = "Saved. We'll send it to " + r.prize.wallet + ". You can correct it here until it's paid.";
+      return r.prize;
+    } catch (e) {
+      note.className = "hint bad"; note.textContent = WALLET_ERRORS[e.message] || e.text || "Couldn't save that wallet. Try again.";
+      return null;
+    }
+  }
+  $("claim").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    if (S.claimRun) saveWallet(S.claimRun, $("wallet").value.trim(), $("claim-note"));
+  });
+
+  $("my-prizes").addEventListener("click", async () => {
+    const v = $("token").value.trim();
+    if (v) { if (!/^snt_[A-Za-z0-9_-]+$/.test(v)) { $("prize-note").textContent = "Paste the snt_ token you got from your invite code."; return; } token = v; $("token").value = ""; }
+    if (!token) { $("prize-note").textContent = "Paste your snt_ token first."; return; }
+    const box = $("my-list"); box.hidden = false; box.textContent = "";
+    let list;
+    try { list = (await api("/my-prizes", {}, true)).prizes; }
+    catch (e) { const p = document.createElement("p"); p.className = "hint bad"; p.textContent = e.message === "sneak_invalid_token" ? "That isn't a live Sentinel token." : "Couldn't load your prizes."; box.appendChild(p); return; }
+    if (!list.length) { const p = document.createElement("p"); p.className = "hint"; p.textContent = "No prizes on this token yet."; box.appendChild(p); return; }
+    for (const pz of list.slice().reverse()) {
+      const item = document.createElement("div"); item.className = "item";
+      const head = document.createElement("span"); head.textContent = usd(pz.amountUsd) + " won " + pz.day + " · " + (pz.paid ? "paid" : pz.wallet ? "waiting to be paid" : "needs a wallet");
+      item.appendChild(head);
+      if (pz.wallet) { const c = document.createElement("code"); c.textContent = pz.wallet; item.appendChild(c); }
+      if (!pz.paid) {
+        const row = document.createElement("div"); row.className = "row";
+        const input = document.createElement("input"); input.placeholder = "0x…"; input.autocomplete = "off"; input.spellcheck = false; input.setAttribute("aria-label", "Wallet for the prize won " + pz.day);
+        const btn = document.createElement("button"); btn.className = "btn"; btn.type = "button"; btn.textContent = pz.wallet ? "Change wallet" : "Save wallet";
+        const note = document.createElement("p"); note.className = "hint";
+        btn.addEventListener("click", async () => { const saved = await saveWallet(pz.runId, input.value.trim(), note); if (saved) { pz.wallet = saved.wallet; head.textContent = usd(pz.amountUsd) + " won " + pz.day + " · waiting to be paid"; } });
+        row.append(input, btn); item.append(row, note);
+      }
+      box.appendChild(item);
+    }
+  });
 
   $("again").addEventListener("click", () => { startRun("practice"); window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" }); });
   $("new-practice").addEventListener("click", () => startRun("practice"));
