@@ -42,6 +42,7 @@ It exists so that Codex and Claude Code are never both free to edit the same par
 - Every other implementation directory (`src/worker/`, `src/orbio/`, `src/ledger/`,
   `src/runner/`, `src/core/`) stays Codex's. Touch them only with a new recorded decision.
 - By scope-owner decision on 2026-10-04, Claude Code applied the scope owner's reviewed Sneak Past Sentinel arcade patch to `src/game/` and its test on `feat/sneak-arcade`; that authorisation covered that change only and `src/game/` otherwise stays Codex's.
+- By scope-owner decision on 2026-10-05, Claude Code built the desk on `claude/proxy-feature-build-cpuclr` (new PR): `src/game/desk/`, its mount in `src/game/hosted-routes.ts`, `tests/game/desk.test.ts`, a desk block in the game custody test and the `test:game` script. Server-run table rounds on play credit, refereed by the governor through its public API; no credit moves. That authorisation covered that change only and `src/game/` otherwise stays Codex's.
 
 ## 2. Adversarial review (standing)
 

@@ -1,0 +1,469 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>The Desk</title>
+<meta name="description" content="Four seats, one job, and Sentinel as the referee. Watch a round for free, then take a seat.">
+<style>
+  /* Layout: one reading column. Pitch and actions, then the table (job, seats, pot), then the ledger, then the lock panel when you sit. Seats go 4 → 2 columns on phones. */
+  :root {
+    color-scheme: dark;
+    --ground: #0B0D11;
+    --panel: #12151B;
+    --rule: #232831;
+    --rule-strong: #343B47;
+    --ink: #E8EBEF;
+    --dim: #8E97A4;
+    --faint: #5A6270;
+    --accent: #E9A23B;
+    --hold: #6FC3FF;
+    --refuse: #F2665F;
+    --pass: #5FD39A;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { background: var(--ground); }
+  body { margin: 0; color: var(--ink); font-family: var(--sans); font-size: 15px; line-height: 1.55; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 880px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 56px; display: flex; flex-direction: column; gap: 28px; }
+  .num { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+  header { display: flex; flex-direction: column; gap: 12px; }
+  .brand { display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 12px; letter-spacing: .16em; color: var(--dim); }
+  .brand svg { width: 22px; height: 22px; flex: none; }
+  .brand .g { color: var(--accent); }
+  .brand .grow { flex: 1; }
+  .brand .tag { letter-spacing: .08em; color: var(--faint); border: 1px solid var(--rule-strong); padding: 2px 8px; }
+  h1 { font-size: clamp(28px, 6vw, 44px); line-height: 1.08; letter-spacing: -.02em; font-weight: 650; margin: 6px 0 0; text-wrap: balance; }
+  h1 span { color: var(--dim); font-weight: 450; }
+  .pitch { margin: 0; color: var(--dim); max-width: 64ch; }
+  .pitch b { color: var(--ink); font-weight: 500; }
+
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn { font: 500 14px/1 var(--sans); letter-spacing: .01em; padding: 12px 18px; border: 1px solid var(--rule-strong); background: var(--panel); color: var(--ink); cursor: pointer; }
+  .btn:hover:not(:disabled) { border-color: var(--dim); }
+  .btn:focus-visible { outline: 2px solid var(--hold); outline-offset: 2px; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.primary { background: var(--ink); border-color: var(--ink); color: var(--ground); }
+  .btn.primary:hover:not(:disabled) { background: #FFFFFF; }
+  .note { font-size: 13px; color: var(--faint); }
+
+  .label { font-family: var(--mono); font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--faint); }
+
+  /* the table */
+  .table { display: flex; flex-direction: column; gap: 18px; }
+  .phase { display: flex; flex-direction: column; gap: 8px; }
+  .phase-row { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  .phase-text { font-size: 17px; font-weight: 500; }
+  .clock { font-family: var(--mono); font-size: 13px; color: var(--dim); font-variant-numeric: tabular-nums; }
+  .track { height: 2px; background: var(--rule); position: relative; overflow: hidden; }
+  .track i { position: absolute; inset: 0 auto 0 0; background: var(--accent); width: 0; }
+
+  .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0; border-top: 1px solid var(--rule); border-bottom: 1px solid var(--rule); }
+  .step { padding: 12px 14px 12px 0; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .step + .step { padding-left: 14px; border-left: 1px solid var(--rule); }
+  .step .t { font-weight: 500; }
+  .step .m { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .step.now .t { color: var(--accent); }
+  .step.done .t { color: var(--dim); }
+
+  .seats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+  .seat { border: 1px solid var(--rule); background: var(--panel); padding: 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; transition: border-color .3s; }
+  .seat.you { border-color: var(--hold); }
+  .seat.winner { border-color: var(--accent); }
+  .seat.out, .seat.failed { opacity: .62; }
+  .seat .top { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .seat .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .seat .who { font-family: var(--mono); font-size: 10.5px; letter-spacing: .1em; color: var(--faint); text-transform: uppercase; }
+  .seat .stack { font-family: var(--mono); font-size: 22px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .bar { height: 3px; background: var(--rule); position: relative; overflow: hidden; }
+  .bar i { position: absolute; inset: 0 auto 0 0; background: var(--ink); transition: width .6s ease; }
+  .seat.out .bar i { background: var(--refuse); }
+  .status { font-family: var(--mono); font-size: 11.5px; letter-spacing: .04em; color: var(--dim); min-height: 1.5em; }
+  .status.in { color: var(--dim); }
+  .status.out { color: var(--refuse); }
+  .status.failed { color: var(--refuse); }
+  .status.finished { color: var(--pass); }
+  .status.winner { color: var(--accent); }
+  .pols { display: flex; flex-direction: column; gap: 3px; font-family: var(--mono); font-size: 11.5px; color: var(--faint); }
+  .pols span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .pols .on { color: var(--dim); }
+  .pick { font: 500 12px/1 var(--sans); padding: 8px 10px; border: 1px solid var(--rule-strong); background: transparent; color: var(--ink); cursor: pointer; text-align: left; }
+  .pick:hover:not(:disabled) { border-color: var(--dim); }
+  .pick:focus-visible { outline: 2px solid var(--hold); outline-offset: 2px; }
+  .pick:disabled { cursor: default; opacity: .7; }
+  .pick.mine { border-color: var(--accent); color: var(--accent); }
+  .picks { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+
+  .pot { display: flex; flex-wrap: wrap; gap: 6px 24px; align-items: baseline; padding-top: 4px; }
+  .pot .v { font-family: var(--mono); font-size: 28px; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .pot .k { color: var(--dim); font-size: 13px; }
+
+  /* the ledger */
+  .ledger { border-top: 1px solid var(--rule); font-family: var(--mono); font-size: 13px; max-height: 360px; overflow-y: auto; }
+  .row { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--rule); animation: rowin .35s ease both; }
+  .row .ts { color: var(--faint); font-variant-numeric: tabular-nums; }
+  .row .tx { color: var(--dim); min-width: 0; overflow-wrap: anywhere; }
+  .row.hold .tx { color: var(--hold); }
+  .row.refuse .tx { color: var(--refuse); }
+  .row.pass .tx { color: var(--pass); }
+  .row.fail .tx { color: var(--refuse); }
+  .row.pot .tx { color: var(--accent); }
+  .row.lock .tx { color: var(--faint); }
+  .row.bill .tx { color: var(--ink); }
+  @keyframes rowin { from { opacity: .2; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+  /* the lock panel */
+  .lockp { border: 1px solid var(--hold); padding: 16px; display: flex; flex-direction: column; gap: 14px; background: var(--panel); }
+  .lockp h2 { margin: 0; font-size: 17px; font-weight: 600; }
+  .lockp .sub { margin: 0; color: var(--dim); font-size: 13.5px; }
+  .choice { display: flex; flex-direction: column; gap: 6px; }
+  .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+  .opt { font: 500 13px/1.3 var(--sans); padding: 9px 12px; border: 1px solid var(--rule-strong); background: transparent; color: var(--dim); cursor: pointer; text-align: left; display: flex; flex-direction: column; gap: 2px; }
+  .opt small { font-family: var(--mono); font-size: 11px; color: var(--faint); }
+  .opt[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); }
+  .opt:focus-visible { outline: 2px solid var(--hold); outline-offset: 2px; }
+  .quote { font-family: var(--mono); font-size: 13.5px; padding: 10px 12px; border-left: 2px solid var(--hold); background: var(--ground); }
+  .quote.bad { border-left-color: var(--refuse); color: var(--refuse); }
+
+  .rules { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; border-top: 1px solid var(--rule); padding-top: 16px; }
+  .rules p { margin: 4px 0 0; color: var(--dim); font-size: 13.5px; }
+  .rules b { color: var(--ink); font-weight: 500; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 14px; display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; color: var(--faint); }
+  footer .seal { font-family: var(--mono); font-size: 11.5px; overflow-wrap: anywhere; }
+  footer a { color: var(--dim); }
+
+  @media (max-width: 720px) {
+    .seats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .rules { grid-template-columns: 1fr; }
+    .steps { grid-template-columns: 1fr; }
+    .step, .step + .step { padding: 10px 0; border-left: 0; }
+    .step + .step { border-top: 1px solid var(--rule); }
+    .cta .btn { flex: 1; }
+  }
+  @media (prefers-reduced-motion: reduce) { .row { animation: none; } .bar i, .seat { transition: none; } }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 100 100" aria-hidden="true">
+        <path d="M36 16H16V84H36" fill="none" stroke="#E8EBEF" stroke-width="10" stroke-linejoin="round"/>
+        <path d="M64 16H84V84H64" fill="none" stroke="#E8EBEF" stroke-width="10" stroke-linejoin="round"/>
+        <line x1="50" y1="25" x2="50" y2="75" stroke="#E9A23B" stroke-width="10" stroke-linecap="round"/>
+      </svg>
+      <span>SENTINEL</span><span>/</span><span class="g">THE DESK</span>
+      <span class="grow"></span>
+      <span class="tag">PLAY CREDIT</span>
+    </div>
+    <h1>Four seats. One job. <span>Sentinel referees.</span></h1>
+    <p class="pitch">Every seat buys in, runs the same three-step job, and locks a policy for each step without seeing the others. Before a call runs, Sentinel holds its worst case from the stack. <b>If it doesn't fit, that's a 402 in public and the seat is out.</b> The seat that finishes the job with the most left takes everything on the table.</p>
+    <div class="cta">
+      <button class="btn primary" id="watch" type="button">Watch a round</button>
+      <button class="btn" id="sit" type="button">Take a seat · free</button>
+      <span class="note" id="cta-note">Watching is free. So is your first seat.</span>
+    </div>
+  </header>
+
+  <section class="table" aria-label="The table">
+    <div class="phase">
+      <div class="phase-row">
+        <span class="phase-text" id="phase-text">Connecting to the table…</span>
+        <span class="clock" id="clock"></span>
+      </div>
+      <div class="track" aria-hidden="true"><i id="track"></i></div>
+    </div>
+    <div>
+      <div class="label" id="job-title">The job</div>
+      <div class="steps" id="steps"></div>
+    </div>
+    <div class="seats" id="seats"></div>
+    <div class="pot">
+      <span><span class="label">On the table</span><br><span class="v" id="pot">$0.0000</span></span>
+      <span class="k" id="pot-note"></span>
+    </div>
+  </section>
+
+  <section class="lockp" id="lockp" hidden aria-label="Lock your policy">
+    <div>
+      <h2 id="lock-title">Lock your policy</h2>
+      <p class="sub" id="lock-sub"></p>
+    </div>
+    <div class="choice">
+      <span class="label">Route</span>
+      <div class="opts" id="opt-route"></div>
+    </div>
+    <div class="choice">
+      <span class="label">Max output tokens</span>
+      <div class="opts" id="opt-max"></div>
+    </div>
+    <div class="choice">
+      <span class="label">Calls</span>
+      <div class="opts" id="opt-burst"></div>
+    </div>
+    <div class="quote" id="quote"></div>
+    <div class="cta"><button class="btn primary" id="lock" type="button">Lock it</button><span class="note" id="lock-note"></span></div>
+  </section>
+
+  <section aria-label="Ledger">
+    <div class="label" style="margin-bottom:8px">Ledger</div>
+    <div class="ledger" id="ledger" aria-live="polite"></div>
+  </section>
+
+  <section class="rules" aria-label="How it works">
+    <div><span class="label">Hold</span><p><b>Sentinel prices the worst case first:</b> the whole input plus your max output, times 1.25. A burst holds three of those at once.</p></div>
+    <div><span class="label">Bill</span><p><b>The call runs and the real bill comes back.</b> The unspent part of the hold goes back to your stack.</p></div>
+    <div><span class="label">Check</span><p><b>Each step's answer is checked.</b> Cut off by your max tokens, or a cheap route missing the figures, and the job is unfinished.</p></div>
+  </section>
+
+  <footer>
+    <span>Play credit. Bills come from the listed price table; no model is called and no credit moves. Picks are recorded and move nothing.</span>
+    <span class="seal" id="seal"></span>
+    <span><a href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a></span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const money = (n) => "$" + Number(n).toFixed(4);
+  const API = "/desk/api";
+  const SAFETY_FALLBACK = 1.25;
+
+  let viewer = null;
+  try { viewer = localStorage.getItem("desk.viewer"); } catch (e) { /* ignore */ }
+  if (!viewer || !/^[A-Za-z0-9_-]{8,64}$/.test(viewer)) {
+    const bytes = new Uint8Array(12); crypto.getRandomValues(bytes);
+    viewer = Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+    try { localStorage.setItem("desk.viewer", viewer); } catch (e) { /* ignore */ }
+  }
+
+  const st = { mode: "live", seat: null, secret: null, roundId: null, view: null, fetchedAt: 0, lines: 0, choice: { route: "cheap", maxTokens: 1024, burst: false }, lockedStep: -1, timer: null, busy: false };
+
+  async function call(path, init) {
+    const headers = { "content-type": "application/json", "x-desk-viewer": viewer };
+    if (st.secret) headers["x-desk-seat"] = st.secret;
+    const res = await window.fetch(API + path, { ...(init || {}), headers, cache: "no-store" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok) { const err = new Error((body.error && body.error.code) || "desk_error"); err.status = res.status; throw err; }
+    return body;
+  }
+
+  async function poll() {
+    try {
+      const v = st.mode === "sit" ? await call("/rounds/" + st.roundId) : await call("/live");
+      accept(v);
+    } catch (e) {
+      if (st.mode === "sit" && e.status === 404) { leaveSeat("That round has closed."); return; }
+      $("phase-text").textContent = "Lost the table. Retrying…";
+    }
+  }
+
+  function accept(v) {
+    if (st.view && st.view.id !== v.id) { $("ledger").textContent = ""; st.lines = 0; }
+    st.view = v; st.fetchedAt = Date.now();
+    render();
+  }
+
+  function startPolling() { clearInterval(st.timer); st.timer = setInterval(poll, 1000); poll(); }
+
+  // ------------------------------------------------------------- render
+  function nowServer() { return st.view ? st.view.serverNow + (Date.now() - st.fetchedAt) : Date.now(); }
+  const POL = (p) => p ? (p.route === "strong" ? "strong" : "cheap") + " · " + p.maxTokens + (p.burst ? " · ×3" : "") : null;
+
+  function render() {
+    const v = st.view; if (!v) return;
+    renderPhase(); renderSteps(v); renderSeats(v); renderPot(v); renderLedger(v); renderLock(v);
+    $("seal").textContent = v.seed ? "Round sealed with sha256 " + v.seedHash + ". Seed revealed: " + v.seed + "." : "Round sealed with sha256 " + v.seedHash + ". The seed is revealed when the round closes.";
+  }
+
+  function renderPhase() {
+    const v = st.view; if (!v) return;
+    const s = v.step !== null ? v.job.steps[v.step] : null;
+    let text;
+    if (v.phase === "intro") text = v.mode === "watch" ? "New round dealing. Pick the seat you think survives." : "You're seated. The first step opens in a moment.";
+    else if (v.phase === "lock") text = "Step " + (v.step + 1) + " · " + s.title + " · seats are locking";
+    else if (v.phase === "run") text = "Step " + (v.step + 1) + " · " + s.title + " · running";
+    else { const w = v.seats.find((x) => x.id === v.winner); text = w ? w.name + " takes the pot" : "Round over. No seat finished."; }
+    $("phase-text").textContent = text;
+    const left = v.deadline ? Math.max(0, v.deadline - nowServer()) : 0;
+    $("clock").textContent = v.deadline && v.phase !== "done" ? (v.phase === "lock" ? "locks close in " : v.phase === "intro" ? "starts in " : "next in ") + Math.ceil(left / 1000) + "s" : v.mode === "watch" ? "next round shortly" : "";
+    // The bar runs from the moment this page first saw the phase to its deadline.
+    const key = v.id + ":" + v.phase + ":" + v.step;
+    if (v.deadline && st.phaseKey !== key) { st.phaseKey = key; st.phaseLen = Math.max(1000, v.deadline - nowServer()); }
+    $("track").style.width = v.deadline && v.phase !== "done" ? Math.min(100, 100 * (1 - left / st.phaseLen)) + "%" : "100%";
+  }
+
+  function renderSteps(v) {
+    $("job-title").textContent = "The job · " + v.job.title;
+    const el = $("steps"); el.textContent = "";
+    v.job.steps.forEach((s, i) => {
+      const d = document.createElement("div");
+      const now = v.step === i && v.phase !== "done", done = v.phase === "done" || (v.step !== null && i < v.step) || (v.step === i && v.phase === "run");
+      d.className = "step" + (now ? " now" : done ? " done" : "");
+      const t = document.createElement("span"); t.className = "t"; t.textContent = (i + 1) + ". " + s.title;
+      const b = document.createElement("span"); b.className = "m"; b.textContent = s.inputTokens.toLocaleString("en-US") + " in · answer " + (s.needTokens ? s.needTokens + " out" : s.needHint + " out");
+      d.append(t, b); el.appendChild(d);
+    });
+  }
+
+  function renderSeats(v) {
+    const el = $("seats"); el.textContent = "";
+    for (const s of v.seats) {
+      const won = v.winner === s.id;
+      const card = document.createElement("div");
+      card.className = "seat" + (s.you ? " you" : "") + (won ? " winner" : "") + (s.status === "out" ? " out" : s.status === "failed" ? " failed" : "");
+      const top = document.createElement("div"); top.className = "top";
+      const nm = document.createElement("span"); nm.className = "nm"; nm.textContent = s.name;
+      const who = document.createElement("span"); who.className = "who"; who.textContent = s.you ? "you" : "house";
+      top.append(nm, who);
+      const stack = document.createElement("span"); stack.className = "stack"; stack.textContent = money(s.stackUsd);
+      const bar = document.createElement("div"); bar.className = "bar"; const bi = document.createElement("i"); bi.style.width = Math.max(0, Math.min(100, s.stackUsd / v.buyInUsd * 100)) + "%"; bar.appendChild(bi);
+      const status = document.createElement("span");
+      const label = won ? "takes the pot" : s.status === "out" ? "out · 402" : s.status === "failed" ? "job unfinished" : s.status === "finished" ? "job finished" : v.phase === "lock" ? (s.locked ? "locked" : "deciding…") : "in";
+      status.className = "status " + (won ? "winner" : s.status); status.textContent = label;
+      const pols = document.createElement("div"); pols.className = "pols";
+      s.policies.forEach((p, i) => {
+        const sp = document.createElement("span");
+        const text = POL(p);
+        sp.className = text ? "on" : "";
+        sp.textContent = (i + 1) + " " + (text || (v.step === i && v.phase === "lock" ? (s.locked ? "locked, hidden" : "…") : "—"));
+        pols.appendChild(sp);
+      });
+      card.append(top, stack, bar, status, pols);
+      if (v.mode === "watch" && v.picks) {
+        const mine = v.yourPick === s.id;
+        const b = document.createElement("button"); b.type = "button"; b.className = "pick" + (mine ? " mine" : "");
+        b.textContent = mine ? "Your pick" : "Pick this seat";
+        b.disabled = !v.pickOpen || !!v.yourPick;
+        if (!b.disabled) b.addEventListener("click", () => pickSeat(s.id));
+        const n = document.createElement("span"); n.className = "picks"; n.textContent = (v.picks[s.id] || 0) + " pick" + ((v.picks[s.id] || 0) === 1 ? "" : "s");
+        card.append(b, n);
+      }
+      el.appendChild(card);
+    }
+  }
+
+  function renderPot(v) {
+    const left = v.seats.reduce((a, s) => a + s.stackUsd, 0);
+    const buyIns = v.buyInUsd * v.seats.length;
+    $("pot").textContent = money(v.potUsd !== null ? v.potUsd : left);
+    $("pot-note").textContent = v.seats.length + " × " + money(v.buyInUsd) + " buy-in · " + money(Math.max(0, buyIns - left)) + " held or spent on calls" + (v.mode === "watch" ? " · the house covers every seat" : "");
+  }
+
+  function renderLedger(v) {
+    const el = $("ledger");
+    if (v.lines.length < st.lines) { el.textContent = ""; st.lines = 0; }
+    const t0 = v.lines.length ? v.lines[0].at : 0;
+    const stick = el.scrollTop + el.clientHeight >= el.scrollHeight - 24;
+    for (const l of v.lines.slice(st.lines)) {
+      const row = document.createElement("div"); row.className = "row " + l.kind;
+      const ts = document.createElement("span"); ts.className = "ts"; const sec = Math.max(0, Math.round((l.at - t0) / 1000));
+      ts.textContent = "+" + Math.floor(sec / 60) + ":" + String(sec % 60).padStart(2, "0");
+      const tx = document.createElement("span"); tx.className = "tx"; tx.textContent = l.text;
+      row.append(ts, tx); el.appendChild(row);
+    }
+    st.lines = v.lines.length;
+    if (stick) el.scrollTop = el.scrollHeight;
+  }
+
+  function quoteFor(p, step) {
+    const v = st.view, pr = v.prices[p.route], s = v.job.steps[step];
+    const one = (s.inputTokens * pr.inputPerMillionUsd + p.maxTokens * pr.outputPerMillionUsd) / 1e6 * (v.prices.safetyMultiplier || SAFETY_FALLBACK);
+    return one * (p.burst ? v.prices.burstCalls : 1);
+  }
+
+  function opt(container, items) {
+    const el = $(container); el.textContent = "";
+    for (const it of items) {
+      const b = document.createElement("button"); b.type = "button"; b.className = "opt"; b.setAttribute("aria-pressed", it.on ? "true" : "false");
+      const t = document.createElement("span"); t.textContent = it.label; const sm = document.createElement("small"); sm.textContent = it.hint;
+      b.append(t, sm); b.addEventListener("click", () => { it.pick(); renderLock(st.view); }); el.appendChild(b);
+    }
+  }
+
+  function renderLock(v) {
+    const me = v.seats.find((s) => s.you);
+    const open = st.mode === "sit" && me && me.status === "in" && v.phase === "lock" && st.lockedStep !== v.step && !me.policies[v.step];
+    $("lockp").hidden = !open;
+    if (!open) return;
+    const s = v.job.steps[v.step], c = st.choice;
+    $("lock-title").textContent = "Step " + (v.step + 1) + " · " + s.title;
+    $("lock-sub").textContent = s.brief + " The input is " + s.inputTokens.toLocaleString("en-US") + " tokens; a complete answer runs " + s.needHint + " tokens.";
+    const p = v.prices;
+    opt("opt-route", [
+      { label: "Cheap", hint: p.cheap.model + " · $" + p.cheap.inputPerMillionUsd.toFixed(2) + " / $" + p.cheap.outputPerMillionUsd.toFixed(2) + " per M", on: c.route === "cheap", pick: () => { c.route = "cheap"; } },
+      { label: "Strong", hint: p.strong.model + " · $" + p.strong.inputPerMillionUsd.toFixed(2) + " / $" + p.strong.outputPerMillionUsd.toFixed(2) + " per M", on: c.route === "strong", pick: () => { c.route = "strong"; } }
+    ]);
+    opt("opt-max", [512, 1024, 2048].map((m) => ({ label: String(m), hint: m === 512 ? "cheapest hold" : m === 2048 ? "never cut off here" : "middle", on: c.maxTokens === m, pick: () => { c.maxTokens = m; } })));
+    opt("opt-burst", [
+      { label: "One call", hint: "one try at the check", on: !c.burst, pick: () => { c.burst = false; } },
+      { label: "Burst of " + p.burstCalls, hint: "best of " + p.burstCalls + ", holds " + p.burstCalls + "×", on: c.burst, pick: () => { c.burst = true; } }
+    ]);
+    const q = quoteFor(c, v.step);
+    const fits = q <= me.stackUsd + 1e-9;
+    $("quote").className = "quote" + (fits ? "" : " bad");
+    $("quote").textContent = fits ? "Sentinel will hold " + money(q) + " of your " + money(me.stackUsd) + ". " + money(me.stackUsd - q) + " stays free while it runs." : "Sentinel would need to hold " + money(q) + " and you have " + money(me.stackUsd) + ". Lock this and you're out with a 402.";
+    $("lock").disabled = st.busy;
+  }
+
+  // ------------------------------------------------------------- actions
+  $("watch").addEventListener("click", () => {
+    if (st.mode === "sit") leaveSeat("");
+    $("watch").textContent = "Watching live"; $("watch").disabled = true;
+    document.querySelector(".table").scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  });
+
+  $("sit").addEventListener("click", async () => {
+    $("sit").disabled = true;
+    try {
+      const r = await call("/sit", { method: "POST", body: "{}" });
+      st.mode = "sit"; st.seat = r.seat; st.secret = r.secret; st.roundId = r.round.id; st.lockedStep = -1;
+      $("ledger").textContent = ""; st.lines = 0;
+      $("watch").textContent = "Back to the live table"; $("watch").disabled = false;
+      $("sit").textContent = "Seated · free"; $("cta-note").textContent = "Your seat is free. Lock a policy each step before the window closes.";
+      accept(r.round); startPolling();
+    } catch (e) {
+      $("sit").disabled = false;
+      $("cta-note").textContent = e.status === 503 ? "Every table is busy. Try again in a minute." : "Couldn't seat you. Try again.";
+    }
+  });
+
+  $("lock").addEventListener("click", async () => {
+    const v = st.view; if (!v || st.busy) return;
+    st.busy = true; renderLock(v);
+    try {
+      const r = await call("/rounds/" + st.roundId + "/lock", { method: "POST", body: JSON.stringify({ step: v.step, policy: st.choice }) });
+      st.lockedStep = v.step; $("lock-note").textContent = ""; accept(r);
+    } catch (e) {
+      $("lock-note").textContent = e.message === "lock_window_closed" ? "The window closed before your lock arrived. The desk locked its default for you." : "That lock didn't go through. Try again.";
+    } finally { st.busy = false; if (st.view) renderLock(st.view); }
+  });
+
+  async function pickSeat(seat) {
+    const v = st.view; if (!v) return;
+    try { accept(await call("/live/pick", { method: "POST", body: JSON.stringify({ round: v.id, seat, viewer }) })); }
+    catch (e) { $("cta-note").textContent = e.message === "picks_closed" ? "Picks close when the first step runs." : "That pick wasn't recorded."; }
+  }
+
+  function leaveSeat(msg) {
+    st.mode = "live"; st.seat = null; st.secret = null; st.roundId = null; st.lockedStep = -1;
+    $("watch").textContent = "Watching live"; $("watch").disabled = true;
+    $("sit").disabled = false; $("sit").textContent = "Take another seat · free";
+    $("cta-note").textContent = msg || "Watching is free. Seats are free while this is play credit.";
+    $("ledger").textContent = ""; st.lines = 0; $("lockp").hidden = true;
+    startPolling();
+  }
+
+  // Watching is free, so the live table runs from the first frame.
+  setInterval(renderPhase, 250);
+  startPolling();
+})();
+</script>
+</body>
+</html>

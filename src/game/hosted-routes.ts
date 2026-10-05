@@ -22,6 +22,7 @@ import { GameRoundRunner } from "./round-runner.js";
 import { GameEventStore } from "./store.js";
 import type { GamePolicy, GameSeason, GameTransport } from "./types.js";
 import { dispatchGameAdmitted } from "./hosted-dispatch.js";
+import { createDeskRoutes } from "./desk/routes.js";
 import type { JsonObject } from "../orbio/types.js";
 
 const MAX_BODY_BYTES = 16 * 1024;
@@ -150,9 +151,12 @@ export function createHostedGameRoutes(config: HostedGameRoutesConfig): HostedGa
   const playPage = readFileSync(PLAY_PAGE_PATH, "utf8");
   // Browser-only arcade game: no calls, no key, no pool.
   const sneakPage = readFileSync(SNEAK_PAGE_PATH, "utf8");
+  // The desk: server-run table rounds on play credit. No key, pool or token.
+  const desk = createDeskRoutes();
 
   return {
     async handle(req, res, url, method) {
+      if (await desk.handle(req, res, url, method)) return true;
       if ((method === "GET" || method === "HEAD") && (url === "/sneak" || url === "/sneak/")) {
         res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "referrer-policy": "no-referrer" });
         res.end(method === "HEAD" ? undefined : sneakPage);

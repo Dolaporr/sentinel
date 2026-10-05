@@ -32,7 +32,7 @@
     "hosted:verify": "tsx tests/proxy/hosted-verify.ts",
     "demo:call": "tsx scripts/demo-call.ts",
     "proxy:cli": "node bin/sentinel-proxy.mjs",
-    "test:game": "tsx tests/unit/game-foundation.test.ts && tsx tests/unit/game-pool-isolation.test.ts && tsx tests/game/hosted-game-custody.test.ts"
+    "test:game": "tsx tests/unit/game-foundation.test.ts && tsx tests/unit/game-pool-isolation.test.ts && tsx tests/game/hosted-game-custody.test.ts && tsx tests/game/desk.test.ts"
   },
   "dependencies": {
     "@openrouter/agent": "^0.11.0",
