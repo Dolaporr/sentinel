@@ -410,6 +410,16 @@ export const LandingPage: React.FC<LandingPageProps> = ({ onNavigateReplay }) =>
                   <Play className="w-3 h-3 fill-current text-rule" />
                   <span>View Evidence Replay</span>
                 </button>
+                {/* A full page load on purpose: /play is a Netlify redirect to the
+                    Railway-hosted game, not a route inside this app. */}
+                <a
+                  href="/play"
+                  className="px-4 py-2 rounded-lg bg-amber-400/90 hover:bg-amber-300 text-chassis font-semibold transition shadow-sm flex items-center space-x-1.5"
+                  title="Play Sneak Past Sentinel"
+                >
+                  <Play className="w-3 h-3 fill-current" />
+                  <span>Play</span>
+                </a>
                 <a
                   href="https://github.com/Dolaporr/sentinel"
                   target="_blank"
