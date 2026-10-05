@@ -1,1 +1,11 @@
-/*    /index.html   200
+# Sneak Past Sentinel lives on the hosted service (Railway). These rules show
+# it on this domain: /play is the short link, and the two proxy rewrites (200)
+# serve the page and pass its /sneak/api calls (POST bodies and the player's
+# Authorization header included) through to Railway. They must stay above the
+# SPA fallback, because Netlify uses the first rule that matches.
+/play         /sneak                                                        301
+/sneak        https://sentinel-production-89e8.up.railway.app/sneak         200
+/sneak/*      https://sentinel-production-89e8.up.railway.app/sneak/:splat  200
+
+# SPA fallback: everything else, /replay included, is the React app.
+/*            /index.html                                                   200
