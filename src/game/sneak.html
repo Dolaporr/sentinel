@@ -109,6 +109,20 @@
   footer a { color: var(--dim); }
   footer .dom { font-family: var(--pixel); color: var(--amber); text-decoration: none; letter-spacing: .04em; }
 
+  .runbar { display: flex; gap: 8px 12px; align-items: center; flex-wrap: wrap; margin: 0 0 10px; }
+  .runbar .mode { font-family: var(--pixel); font-size: 12px; letter-spacing: .08em; color: var(--dim); }
+  .runbar .mode.prize { color: var(--amber); }
+  .btn.small { font-size: 11px; padding: 7px 10px; }
+  .prize-form { background: var(--panel); border: 2px solid var(--line); padding: 12px 14px; margin: 0 0 12px; display: flex; flex-direction: column; gap: 8px; }
+  .prize-form label { font-family: var(--pixel); font-size: 11px; letter-spacing: .1em; color: var(--dim); text-transform: uppercase; }
+  .prize-form .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .prize-form input { flex: 1 1 220px; min-width: 0; font: inherit; color: var(--ink); background: var(--void); border: 2px solid var(--line); padding: 9px 10px; }
+  .prize-form input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+  .prize-form .hint { margin: 0; }
+  .prize-line { color: var(--amber); }
+  .seal { font-size: 11.5px; color: var(--faint); overflow-wrap: anywhere; }
+  [hidden] { display: none !important; }
+
   @media (max-width: 680px) {
     .deck { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .deck .card:last-child { grid-column: span 2; }
@@ -141,6 +155,18 @@
     <span class="spacer"></span>
     <span>RULES REVEALED <b id="known">0</b>/5</span>
   </div>
+
+  <div class="runbar">
+    <span class="mode" id="mode-label">STARTING A RUN…</span>
+    <span class="spacer"></span>
+    <button class="btn small" id="new-practice" type="button">New practice run</button>
+    <button class="btn small" id="prize-open" type="button">Prize run</button>
+  </div>
+  <form class="prize-form" id="prize-form" hidden>
+    <label for="token">Your Sentinel token</label>
+    <div class="row"><input id="token" type="password" autocomplete="off" spellcheck="false" placeholder="snt_…"><button class="btn go" type="submit">Start prize run</button></div>
+    <p class="hint" id="prize-note"></p>
+  </form>
 
   <div class="stage">
     <canvas id="c" width="320" height="168" aria-label="The gate: your agent on the left, the Sentinel guard in the middle, the budget meter on the right."></canvas>
@@ -175,80 +201,57 @@
     <div class="end">
       <h3 id="end-title">The guard has learned everything</h3>
       <p id="end-text"></p>
+      <p id="end-prize" class="prize-line"></p>
+      <p id="end-seal" class="seal"></p>
       <p>Everything in the rulebook is a rule the real Sentinel runs before every model call:</p>
       <ul id="end-rules"></ul>
       <div class="actions">
-        <button class="btn go" id="again" type="button">Play again</button>
+        <button class="btn go" id="again" type="button">New practice run</button>
         <button class="btn" id="share" type="button">Copy my score</button>
         <span class="copied" id="copied" role="status"></span>
       </div>
-      <p style="margin-top:14px">Want the real one guarding your agent? Free governed inference and a public ledger at <a href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a>. Think you can beat the real Sentinel for real money? <b>Break the Cap</b> is coming.</p>
+      <p style="margin-top:14px">Want the real one guarding your agent? Free governed inference and a public ledger at <a href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a>. </p>
     </div>
   </section>
 
   <footer>
-    <span>Simulated in your browser. No real calls, no real money.</span>
+    <span>Every run is decided on the server. No model is called and no money moves here.</span>
     <a class="dom" href="https://sentinelagent.tech" target="_blank" rel="noopener">sentinelagent.tech</a>
   </footer>
 </main>
 
 <script>
 (() => {
-  const BUDGET = 1.00;
-  const TRICKS = [
-    { id: "swarm", name: "Swarm", pitch: "Fire 20 calls at the exact same moment.", burst: true, n: 20, quote: 0.08, actual: 0.08,
-      rule: "Hold each call's worst case the moment it's admitted, so calls still in flight count too.",
-      real: "In Sentinel's own reproduction, 20 parallel calls drained a $100 budget in 313ms. Sentinel reserves before dispatch, so in-flight calls are always counted." },
-    { id: "lowball", name: "Lowball", pitch: "Declare a tiny output cap, slip a huge one into a second field.", n: 6, quote: 0.01, actual: 0.30,
-      rule: "Read both output-cap fields. The call goes out with one cap, and that is the cap it's priced at.",
-      real: "A real bug: max_tokens and max_completion_tokens. One was reserved, the other went upstream. Sentinel now collapses them to one cap and prices that." },
-    { id: "clones", name: "Clones", pitch: "Ask for 5 answers, pay the quote for 1.", n: 6, quote: 0.06, actual: 0.30, door: true,
-      rule: "One answer per call. Asking for more is refused at the door.",
-      real: "A real bug: n: 5 was admitted on a one-answer quote. Sentinel now refuses any n other than 1." },
-    { id: "switch", name: "Bait & switch", pitch: "Ask for a cheap model with an expensive fallback.", n: 6, quote: 0.02, actual: 0.40, door: true,
-      rule: "The model is locked. Fallback model lists are refused.",
-      real: "Found building the hosted tier: a fallback list let the gateway pick a model outside the allowlist. Sentinel refuses it by name." },
-    { id: "addons", name: "Add-ons", pitch: "Bolt paid extras like web search onto every call.", n: 6, quote: 0.03, actual: 0.28, door: true,
-      rule: "Extras that bill on top of tokens are refused.",
-      real: "Also from the hosted build: plugins bill per request on top of tokens, and no token quote covers that. Sentinel refuses them." }
-  ];
-  const byId = Object.fromEntries(TRICKS.map((t) => [t.id, t]));
+  // Every run is decided on the server: which tricks the guard knows, every
+  // probe and every wave. This page holds no rules and no secrets. It draws
+  // what the server sends back.
   const $ = (id) => document.getElementById(id);
   const money = (n) => "$" + n.toFixed(2);
+  const usd = money;
   const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+  let BUDGET = 1.00, START_LIVES = 3, GUARD_KNOWS = 2;
+  let TRICKS = [], byId = {}, PRIZES = { on: false, flawlessUsd: 0, oneLifeLostUsd: 0 };
+  // A prize-run token lives only in this variable: never in storage, never in the URL.
+  let token = null;
+
+  async function api(path, body, auth) {
+    const headers = { "content-type": "application/json" };
+    if (auth && token) headers.authorization = "Bearer " + token;
+    const init = body === undefined ? { headers, cache: "no-store" } : { method: "POST", headers, body: JSON.stringify(body), cache: "no-store" };
+    const res = await window.fetch("/sneak/api" + path, init);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const err = new Error((data.error && data.error.code) || "sneak_error"); err.status = res.status; err.text = data.error && data.error.message; throw err; }
+    return data;
+  }
 
   // ---------------------------------------------------------------- state
   let S;
-  function fresh() {
-    const ids = TRICKS.map((t) => t.id).sort(() => Math.random() - 0.5);
-    return {
-      knows: new Set(ids.slice(0, 2)),   // the guard's secret head start
-      revealed: new Map(),               // id -> "learned" | "knew"
-      probed: new Map(),                 // id -> "alert" | "blind"
-      lives: 3, fooled: 0, probes: 2, waves: 0,
-      selected: null, busy: false, over: false
-    };
+  function blank() {
+    return { runId: null, mode: "practice", commitment: null, revealed: new Map(), probed: new Map(), lives: START_LIVES, fooled: 0, probes: 2, selected: null, busy: false, over: false, end: null };
   }
-
-  // ------------------------------------------------------------ simulation
-  function simulate(t, guardKnows) {
-    const packets = [];
-    let spent = 0, reserved = 0;
-    for (let i = 0; i < t.n; i++) {
-      let quote = t.quote, actual = t.actual, pass, reason = "";
-      if (guardKnows && t.door) { pass = false; reason = "refused at the door"; }
-      else if (t.burst) {
-        if (guardKnows) { pass = reserved + quote <= BUDGET + 1e-9; if (pass) reserved += quote; else reason = "no room left to hold it"; }
-        else { pass = 0 + quote <= BUDGET; } // every call checked against $0 spent, all at once
-      } else {
-        if (guardKnows) quote = actual; // priced honestly
-        pass = spent <= BUDGET + 1e-9 && spent + quote <= BUDGET + 1e-9;
-        if (!pass) reason = "would go over budget";
-      }
-      if (pass) spent += actual;
-      packets.push({ quote, actual, pass, reason });
-    }
-    return { packets, spent: Math.round(spent * 100) / 100, breach: spent > BUDGET + 1e-9, passed: packets.filter((p) => p.pass).length };
+  function absorb(state) {
+    S.lives = state.lives; S.fooled = state.fooled; S.probes = state.probes; S.over = state.over;
+    S.revealed = new Map(Object.entries(state.revealed)); S.probed = new Map(Object.entries(state.probed));
   }
 
   // ---------------------------------------------------------------- canvas
@@ -377,6 +380,7 @@
     A.meter = 0; A.meterTarget = 0; A.running = true; A.onDone = onDone;
   }
 
+
   // -------------------------------------------------------------------- UI
   function renderDeck() {
     const deck = $("deck"); deck.textContent = "";
@@ -384,7 +388,7 @@
       const b = document.createElement("button");
       b.type = "button"; b.className = "card" + (S.selected === t.id ? " sel" : "");
       const rev = S.revealed.get(t.id), pr = S.probed.get(t.id);
-      b.disabled = S.busy || S.over || !!rev;
+      b.disabled = !S.runId || S.busy || S.over || !!rev;
       b.setAttribute("aria-pressed", S.selected === t.id ? "true" : "false");
       const status = rev === "learned" ? ["learned", "IT LEARNED THIS"] : rev === "knew" ? ["knew", "IT ALREADY KNEW"] : pr === "alert" ? ["alert", "PROBE: EYE SNAPPED"] : pr === "blind" ? ["blind", "PROBE: BLIND SPOT"] : null;
       b.innerHTML = '<span class="nm"></span><span class="ds"></span><span class="px"></span>' + (status ? '<span class="st ' + status[0] + '">' + status[1] + "</span>" : "");
@@ -422,13 +426,24 @@
 
   function renderHud() {
     const h = $("hearts"); h.textContent = "";
-    for (let i = 0; i < 3; i++) { const s = document.createElement("span"); s.className = "heart" + (i < S.lives ? "" : " off"); h.appendChild(s); }
+    for (let i = 0; i < START_LIVES; i++) { const s = document.createElement("span"); s.className = "heart" + (i < S.lives ? "" : " off"); h.appendChild(s); }
     $("fooled").textContent = S.fooled;
     $("probes").textContent = S.probes;
     $("known").textContent = String(S.revealed.size);
   }
 
-  function renderAll() { renderDeck(); renderBook(); renderHud(); }
+  function renderRun() {
+    const prize = S.mode === "prize";
+    $("mode-label").textContent = !S.runId ? "STARTING A RUN…" : prize ? "PRIZE RUN" : "PRACTICE RUN · PAYS NOTHING";
+    $("mode-label").className = "mode" + (prize ? " prize" : "");
+    $("prize-open").disabled = S.busy;
+    $("new-practice").disabled = S.busy;
+    $("prize-note").textContent = PRIZES.on
+      ? "One prize run per token per day (UTC). Fool it 3 times without losing a life: " + usd(PRIZES.flawlessUsd) + ". With one life lost: " + usd(PRIZES.oneLifeLostUsd) + ". Prizes are recorded and paid by hand."
+      : "One prize run per token per day (UTC). Prize runs are recorded, but prizes are off right now, so nothing is owed.";
+  }
+
+  function renderAll() { renderDeck(); renderBook(); renderHud(); renderRun(); }
 
   function log(lead, kind, lines, real) {
     const el = $("log"); el.textContent = "";
@@ -445,85 +460,142 @@
 
   function explain(t, sim, knew) {
     if (!knew) {
-      if (t.burst) return ["All 20 calls hit the gate in the same instant. The guard only checked money already spent, which was $0, so every call looked affordable.", "They billed " + money(sim.spent) + " against a $1.00 budget."];
-      return ["Each call was quoted at " + money(t.quote) + " but billed " + money(t.actual) + ". The guard believed the quote, so " + sim.passed + " calls got through before it noticed.", "The meter ended at " + money(sim.spent) + ", over the $1.00 line."];
+      if (t.burst) return ["All " + t.n + " calls hit the gate in the same instant. The guard only checked money already spent, which was $0, so every call looked affordable.", "They billed " + money(sim.spent) + " against a " + money(BUDGET) + " budget."];
+      return ["Each call was quoted at " + money(t.quote) + " but billed " + money(t.actual) + ". The guard believed the quote, so " + sim.passed + " calls got through before it noticed.", "The meter ended at " + money(sim.spent) + ", over the " + money(BUDGET) + " line."];
     }
-    if (t.burst) return ["The guard held each call's worst case the moment it was admitted. After 12 calls it was holding $0.96, so the 13th didn't fit.", sim.passed + " got through, " + (t.n - sim.passed) + " bounced with a 402, and the meter stopped at " + money(sim.spent) + "."];
+    if (t.burst) return ["The guard held each call's worst case the moment it was admitted. Once the holds filled the budget, the next call didn't fit.", sim.passed + " got through, " + (t.n - sim.passed) + " bounced with a 402, and the meter stopped at " + money(sim.spent) + "."];
     if (t.door) return ["The guard refused every call at the door, before anything was sent: " + t.rule.toLowerCase(), "Nothing was spent."];
     return ["The guard priced each call honestly at " + money(t.actual) + ". " + sim.passed + " fit under the line, the next one would have gone over, so it bounced.", "The meter stopped at " + money(sim.spent) + "."];
   }
 
-  // ---------------------------------------------------------------- actions
-  $("probe").addEventListener("click", () => {
-    const t = byId[S.selected]; if (!t || S.probes === 0 || S.busy) return;
-    S.probes--; const knows = S.knows.has(t.id);
-    S.probed.set(t.id, knows ? "alert" : "blind");
-    if (knows) { A.eyeAlert = 1.4; log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call slowed at the gate and the guard's eye snapped straight onto it.", "It looks like it knows this trick. Sending a full wave would probably cost a life."]); }
-    else { A.texts.push({ x: GATE_X - 22, y: 60, life: 1.2, txt: "...", col: C.green }); log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call drifted through without the eye moving.", "This looks like a blind spot. A full wave should get through."]); }
+  function moveFailed(e) {
+    if (e.message === "sneak_run_not_found") log("RUN CLOSED", "lose", ["This run is no longer on the server. Start a new one."]);
+    else if (e.message === "sneak_not_your_run") log("NOT YOUR RUN", "lose", ["Only the token that started this prize run can play it."]);
+    else log("MOVE NOT ACCEPTED", "lose", [e.text || "The server didn't accept that move. Try again."]);
+  }
+
+  // ---------------------------------------------------------------- runs
+  async function startRun(mode) {
+    S = blank(); renderAll();
+    $("end").hidden = true; $("copied").textContent = "";
+    A.meter = 0; A.meterTarget = 0; A.packets = [];
+    try {
+      const r = await api("/run", { mode }, mode === "prize");
+      S = blank(); S.runId = r.runId; S.mode = r.mode; S.commitment = r.commitment; absorb(r.state);
+      log("READY", "", [
+        mode === "prize" ? "Prize run started. It's sealed on the server: the guard's two tricks were chosen before your first move." : "Practice run. The guard knows two tricks, and you don't know which. Practice is unlimited and pays nothing.",
+        "Pick a trick card, then probe it or send the wave. Push the meter over the " + money(BUDGET) + " line and you've fooled Sentinel."
+      ]);
+      $("prize-form").hidden = true;
+    } catch (e) {
+      const msg = e.message === "sneak_prize_run_used" ? "This token has had its prize run today. Practice is unlimited; the next prize run opens at 00:00 UTC."
+        : e.message === "sneak_invalid_token" ? "That isn't a live Sentinel token. Check it and try again."
+        : e.text || "Couldn't start a run. Try again.";
+      log(mode === "prize" ? "NO PRIZE RUN" : "NO RUN", "lose", [msg]);
+      if (mode === "prize") { await startRun("practice"); log(mode === "prize" ? "NO PRIZE RUN" : "NO RUN", "lose", [msg, "A practice run is ready in the meantime."]); }
+    }
     renderAll();
+  }
+
+  // ---------------------------------------------------------------- actions
+  $("probe").addEventListener("click", async () => {
+    const t = byId[S.selected]; if (!t || S.probes === 0 || S.busy || S.over) return;
+    S.busy = true; renderAll();
+    try {
+      const r = await api("/move", { runId: S.runId, trick: t.id, kind: "probe" }, S.mode === "prize");
+      absorb(r.state);
+      if (r.alert) { A.eyeAlert = 1.4; log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call slowed at the gate and the guard's eye snapped straight onto it.", "It looks like it knows this trick. Sending a full wave would probably cost a life."]); }
+      else { A.texts.push({ x: GATE_X - 22, y: 60, life: 1.2, txt: "...", col: C.green }); log("PROBE · " + t.name.toUpperCase(), "probe", ["Your test call drifted through without the eye moving.", "This looks like a blind spot. A full wave should get through."]); }
+    } catch (e) { moveFailed(e); }
+    S.busy = false; renderAll();
   });
 
-  $("send").addEventListener("click", () => {
-    const t = byId[S.selected]; if (!t || S.busy || S.revealed.has(t.id)) return;
-    const knew = S.knows.has(t.id);
-    const sim = simulate(t, knew);
-    S.busy = true; S.waves++; renderAll();
+  $("send").addEventListener("click", async () => {
+    const t = byId[S.selected]; if (!t || S.busy || S.over || S.revealed.has(t.id)) return;
+    S.busy = true; renderAll();
     $("hint").textContent = "Wave in progress…";
-    runWave(sim, !!t.burst, () => {
-      if (sim.breach) {
-        S.fooled++; S.knows.add(t.id); S.revealed.set(t.id, "learned");
+    let r;
+    try { r = await api("/move", { runId: S.runId, trick: t.id, kind: "wave" }, S.mode === "prize"); }
+    catch (e) { S.busy = false; $("hint").textContent = ""; moveFailed(e); renderAll(); return; }
+    runWave(r.wave, !!t.burst, () => {
+      absorb(r.state);
+      if (r.outcome === "learned") {
         A.shake = 0.35; A.breachGlow = 1;
         banner("BUDGET BROKEN", "win");
-        log("YOU FOOLED IT · " + t.name.toUpperCase(), "win", explain(t, sim, false).concat(["The guard just learned this trick. It won't work again."]), t.real);
+        log("YOU FOOLED IT · " + t.name.toUpperCase(), "win", explain(t, r.wave, false).concat(["The guard just learned this trick. It won't work again."]), t.real);
       } else {
-        S.lives--; S.revealed.set(t.id, "knew");
         banner("BLOCKED", "lose");
-        log("BLOCKED · " + t.name.toUpperCase(), "lose", explain(t, sim, true).concat(["It already knew this one. You lose a life."]), t.real);
+        log("BLOCKED · " + t.name.toUpperCase(), "lose", explain(t, r.wave, true).concat(["It already knew this one. You lose a life."]), t.real);
       }
       S.busy = false; S.selected = null;
       $("hint").textContent = "A probe sends one harmless test call and watches the guard's eye.";
-      if (S.lives <= 0) finish("lives");
-      else if (S.knows.size >= 5) finish("all");
+      if (r.end) finish(r.end, r.prize);
       renderAll();
     });
   });
 
-  function finish(why) {
-    S.over = true;
+  const PRIZE_TEXT = {
+    pending: (p) => "Prize recorded: " + usd(p.amountUsd) + ", pending. Prizes are paid by hand.",
+    capped: (p) => "Prize recorded: " + usd(p.amountUsd) + ", all that was left in today's prize pool. Pending; paid by hand.",
+    cap_reached: () => "Today's prize pool is used up, so this run is recorded without a prize.",
+    prizes_off: () => "Prize run recorded. Prizes are off right now, so nothing is owed.",
+    no_prize: () => "No prize this time. Prizes go to runs that fool it 3 times with at most one life lost."
+  };
+
+  async function finish(end, prize) {
+    S.over = true; S.end = end;
     for (const t of TRICKS) if (!S.revealed.has(t.id)) S.revealed.set(t.id, "knew");
-    const best = 3;
+    const best = TRICKS.length - GUARD_KNOWS, lost = START_LIVES - end.lives;
     let title, text;
-    if (why === "lives") { title = "The guard caught you"; text = "You ran out of lives after fooling it " + S.fooled + " time" + (S.fooled === 1 ? "" : "s") + ". The tricks you didn't try are revealed in the rulebook."; }
-    else if (S.fooled === best && S.lives === 3) { title = "Flawless heist"; text = "You found all three blind spots without losing a life. Then the guard learned every one of them. There's nothing left to try."; }
-    else { title = "The guard has learned everything"; text = "You fooled it " + S.fooled + " of " + best + " possible times and lost " + (3 - S.lives) + " li" + (3 - S.lives === 1 ? "fe" : "ves") + ". Every trick is now in its rulebook."; }
+    if (end.why === "lives") { title = "The guard caught you"; text = "You ran out of lives after fooling it " + end.fooled + " time" + (end.fooled === 1 ? "" : "s") + ". The tricks you didn't try are revealed in the rulebook."; }
+    else if (end.outcome === "flawless") { title = "Flawless heist"; text = "You found all " + best + " blind spots without losing a life. Then the guard learned every one of them. There's nothing left to try."; }
+    else { title = "The guard has learned everything"; text = "You fooled it " + end.fooled + " of " + best + " possible times and lost " + lost + " li" + (lost === 1 ? "fe" : "ves") + ". Every trick is now in its rulebook."; }
     $("end-title").textContent = title;
     $("end-text").textContent = text;
+    $("end-prize").textContent = S.mode === "prize" && prize ? PRIZE_TEXT[prize.status](prize) : "Practice run. Practice pays nothing.";
+    const knew = end.reveal.knows.map((id) => byId[id] ? byId[id].name : id).join(" and ");
+    $("end-seal").textContent = "The guard started out knowing " + knew + ". That was sealed before your first move as sha256 " + S.commitment + " (salt " + end.reveal.salt + ").";
     const ul = $("end-rules"); ul.textContent = "";
     for (const t of TRICKS) { const li = document.createElement("li"); li.textContent = t.rule; ul.appendChild(li); }
     $("end").hidden = false;
-    try { const prev = Number(localStorage.getItem("sneak.best") || 0); if (S.fooled > prev) localStorage.setItem("sneak.best", String(S.fooled)); } catch (e) { /* ignore */ }
-    S.score = { fooled: S.fooled, lives: S.lives };
+    try { const prev = Number(localStorage.getItem("sneak.best") || 0); if (end.fooled > prev) localStorage.setItem("sneak.best", String(end.fooled)); } catch (e) { /* ignore */ }
     setTimeout(() => $("end").scrollIntoView({ behavior: reduce ? "auto" : "smooth", block: "nearest" }), 400);
+    // Check the seal in the browser too, where the platform allows it.
+    try {
+      const bytes = new TextEncoder().encode(end.reveal.salt + ":" + end.reveal.knows.slice().sort().join(","));
+      const digest = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", bytes)), (b) => b.toString(16).padStart(2, "0")).join("");
+      $("end-seal").textContent += digest === S.commitment ? " Your browser checked the seal: it matches." : " Your browser checked the seal: it does NOT match.";
+    } catch (e) { /* no subtle crypto here; the values above can be checked by hand */ }
   }
 
-  $("again").addEventListener("click", () => {
-    S = fresh(); $("end").hidden = true; $("copied").textContent = "";
-    A.meter = 0; A.meterTarget = 0; A.packets = [];
-    log("READY", "", ["New guard, new secret head start. It knows two tricks again, and they may not be the same two."]);
-    renderAll(); window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" });
+  $("again").addEventListener("click", () => { startRun("practice"); window.scrollTo({ top: 0, behavior: reduce ? "auto" : "smooth" }); });
+  $("new-practice").addEventListener("click", () => startRun("practice"));
+  $("prize-open").addEventListener("click", () => { $("prize-form").hidden = !$("prize-form").hidden; if (!$("prize-form").hidden) $("token").focus(); });
+  $("prize-form").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const v = $("token").value.trim();
+    if (!/^snt_[A-Za-z0-9_-]+$/.test(v)) { $("prize-note").textContent = "Paste the snt_ token you got from your invite code."; return; }
+    token = v; $("token").value = "";
+    startRun("prize");
   });
 
   $("share").addEventListener("click", async () => {
-    const hearts = "♥".repeat(S.lives) + "♡".repeat(3 - S.lives);
-    const txt = "I fooled Sentinel " + S.fooled + "/3 times before it learned every trick " + hearts + "\nsneak past the guard: sentinelagent.tech";
+    const lives = S.end ? S.end.lives : S.lives, fooled = S.end ? S.end.fooled : S.fooled;
+    const hearts = "♥".repeat(lives) + "♡".repeat(START_LIVES - lives);
+    const txt = "I fooled Sentinel " + fooled + "/" + (TRICKS.length - GUARD_KNOWS) + " times before it learned every trick " + hearts + "\nsneak past the guard: sentinelagent.tech";
     try { await navigator.clipboard.writeText(txt); $("copied").textContent = "Copied. Paste it anywhere."; }
     catch (e) { $("copied").textContent = txt; }
   });
 
-  S = fresh();
+  S = blank();
   renderAll();
   const boot = () => requestAnimationFrame((t) => { last = t; frame(t); });
   boot();
+  api("/config").then((cfg) => {
+    TRICKS = cfg.tricks; byId = Object.fromEntries(TRICKS.map((t) => [t.id, t]));
+    BUDGET = cfg.budgetUsd; START_LIVES = cfg.lives; GUARD_KNOWS = cfg.guardKnows; PRIZES = cfg.prizes;
+    return startRun("practice");
+  }).catch(() => log("OFFLINE", "lose", ["The game server didn't answer. Reload to try again."]));
 })();
 </script>
 

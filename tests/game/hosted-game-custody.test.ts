@@ -160,7 +160,14 @@ check("play page loads nothing from another origin", !/(src|href)=["']https?:\/\
 const sneak = await fetch(`http://127.0.0.1:${port}/sneak`);
 const sneakHtml = await sneak.text();
 check("GET /sneak serves the arcade game", sneak.status === 200 && sneakHtml.includes("Sneak past the"));
-check("arcade page makes no network calls and carries no secrets", !/fetch\(|XMLHttpRequest|WebSocket|<link[^>]+href=["']https?:|src=["']https?:|@import/i.test(sneakHtml) && !sneakHtml.includes(KEY) && !sneakHtml.includes(ADMIN));
+// The arcade now asks the server to decide every run, so it calls exactly one
+// thing: its own same-origin /sneak/api. Nothing else, and no secrets.
+check("arcade page calls only its own /sneak/api and carries no secrets", !/XMLHttpRequest|WebSocket|<link[^>]+href=["']https?:|src=["']https?:|@import/i.test(sneakHtml) && (sneakHtml.match(/fetch\(/g) ?? []).length === 1 && sneakHtml.includes('window.fetch("/sneak/api" + path') && !sneakHtml.includes(KEY) && !sneakHtml.includes(ADMIN));
+const hitsBeforeSneak = upstreamHits;
+const sneakRun = await fetch(`http://127.0.0.1:${port}/sneak/api/run`, { method: "POST", body: JSON.stringify({ mode: "practice" }) });
+const sneakRunText = await sneakRun.text();
+check("sneak runs are served by the hosted game mount", sneakRun.status === 201 && sneakRunText.includes("\"commitment\""));
+check("sneak runs carry no operator key and never reach upstream", !sneakRunText.includes(KEY) && upstreamHits === hitsBeforeSneak);
 check("game JSONL contains no operator key", !gameJsonl.includes(KEY));
 check("public game board contains no operator key", !board.includes(KEY));
 check("all player-visible provider responses contain no operator key", !allClientBodies.includes(KEY));
