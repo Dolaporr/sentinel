@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>Sneak Prizes</title>
+<style>
+  /* Layout: one column. Token bar, totals, then the prize table; the table scrolls sideways inside its own box on phones. */
+  :root {
+    color-scheme: dark;
+    --ground: #0B0D11;
+    --panel: #12151B;
+    --rule: #232831;
+    --ink: #E8EBEF;
+    --dim: #8E97A4;
+    --faint: #5A6270;
+    --accent: #E9A23B;
+    --ok: #5FD39A;
+    --bad: #F2665F;
+    --sans: ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { background: var(--ground); }
+  body { margin: 0; color: var(--ink); font: 15px/1.5 var(--sans); }
+  .wrap { max-width: 1040px; margin: 0 auto; padding-inline: 16px; padding-block: 24px 48px; display: flex; flex-direction: column; gap: 18px; }
+  h1 { margin: 0; font-size: 24px; font-weight: 650; }
+  p { margin: 0; color: var(--dim); max-width: 70ch; }
+  form { display: flex; gap: 8px; flex-wrap: wrap; }
+  input { font: 14px var(--mono); color: var(--ink); background: var(--panel); border: 1px solid var(--rule); padding: 9px 10px; min-width: 0; }
+  input:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  #token { flex: 1 1 280px; }
+  button { font: 500 13px var(--sans); color: var(--ink); background: var(--panel); border: 1px solid #343B47; padding: 9px 12px; cursor: pointer; white-space: nowrap; }
+  button.go { background: var(--ink); color: var(--ground); border-color: var(--ink); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .totals { display: flex; flex-wrap: wrap; gap: 8px 28px; align-items: baseline; }
+  .totals b { font: 22px var(--mono); font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 500; }
+  .totals span { color: var(--dim); font-size: 13px; }
+  .bar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; font-size: 13px; color: var(--dim); }
+  .scroll { overflow-x: auto; border-top: 1px solid var(--rule); }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; min-width: 760px; }
+  th { text-align: left; font: 11px var(--mono); letter-spacing: .1em; text-transform: uppercase; color: var(--faint); padding: 10px 8px; border-bottom: 1px solid var(--rule); }
+  td { padding: 10px 8px; border-bottom: 1px solid var(--rule); vertical-align: middle; }
+  td.num { font-family: var(--mono); font-variant-numeric: tabular-nums; text-align: right; }
+  th.num { text-align: right; }
+  .mono { font-family: var(--mono); font-size: 12.5px; }
+  .wallet { display: flex; gap: 6px; align-items: center; }
+  .wallet code { font: 12.5px var(--mono); color: var(--ink); overflow-wrap: anywhere; }
+  .none { color: var(--faint); font-style: italic; }
+  .st { font: 11.5px var(--mono); letter-spacing: .04em; }
+  .st.paid { color: var(--ok); }
+  .st.wait { color: var(--accent); }
+  .st.nowallet { color: var(--faint); }
+  .act { display: flex; gap: 6px; }
+  .act input { width: 150px; font-size: 12px; padding: 7px 8px; }
+  .act button { padding: 7px 10px; font-size: 12px; }
+  .msg { font-size: 13px; color: var(--dim); min-height: 1.5em; }
+  .msg.bad { color: var(--bad); }
+  .empty { padding: 18px 8px; color: var(--faint); }
+</style>
+</head>
+<body>
+<main class="wrap">
+  <header>
+    <h1>Sneak prizes to pay</h1>
+    <p>Every prize a prize run has earned, with the winner's handle, the amount and the Robinhood Chain wallet they gave. Send the $CREDIT by hand, then mark the prize paid so it can't be paid twice.</p>
+  </header>
+
+  <form id="auth" autocomplete="off">
+    <label for="token" hidden>Admin token</label>
+    <input id="token" type="password" spellcheck="false" placeholder="Admin token (the one for /admin)">
+    <button class="go" type="submit">Load prizes</button>
+  </form>
+  <div class="msg" id="msg" role="status">The token stays in this tab's memory only. Reload the page and it's gone.</div>
+
+  <section id="list" hidden>
+    <div class="totals">
+      <div><b id="t-unpaid">$0.00</b><br><span>unpaid</span></div>
+      <div><b id="t-ready">$0.00</b><br><span>unpaid with a wallet, ready to send</span></div>
+      <div><b id="t-count">0</b><br><span>unpaid prizes</span></div>
+    </div>
+    <div class="bar" style="margin-top:14px">
+      <label><input type="checkbox" id="show-paid"> Show paid prizes</label>
+      <button type="button" id="refresh">Refresh</button>
+    </div>
+    <div class="scroll" style="margin-top:10px">
+      <table>
+        <thead><tr><th>Won</th><th>Handle</th><th class="num">Amount</th><th>Wallet</th><th>Status</th><th>Mark paid</th></tr></thead>
+        <tbody id="rows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const usd = (n) => "$" + Number(n).toFixed(2);
+  // The admin token lives only in this variable: never in storage, never in the URL.
+  let token = null;
+  let prizes = [];
+
+  async function call(path, body) {
+    const init = { headers: { authorization: "Bearer " + token, "content-type": "application/json" }, cache: "no-store" };
+    if (body !== undefined) { init.method = "POST"; init.body = JSON.stringify(body); }
+    const res = await window.fetch("/sneak/api/admin" + path, init);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) { const e = new Error((data.error && data.error.message) || "Request failed."); e.status = res.status; throw e; }
+    return data;
+  }
+
+  function say(text, bad) { $("msg").textContent = text; $("msg").className = "msg" + (bad ? " bad" : ""); }
+
+  async function load() {
+    try {
+      const d = await call("/prizes");
+      prizes = d.prizes;
+      $("t-unpaid").textContent = usd(d.unpaidUsd);
+      $("t-ready").textContent = usd(d.unpaidWithWalletUsd);
+      $("t-count").textContent = String(d.unpaidCount);
+      $("list").hidden = false;
+      say("Loaded " + prizes.length + " prize" + (prizes.length === 1 ? "" : "s") + ".");
+      render();
+    } catch (e) {
+      $("list").hidden = true;
+      say(e.status === 401 ? "That isn't the admin token." : e.message, true);
+    }
+  }
+
+  function render() {
+    const tbody = $("rows"); tbody.textContent = "";
+    const shown = prizes.filter((p) => $("show-paid").checked || !p.paidAt).slice().reverse();
+    if (!shown.length) {
+      const tr = document.createElement("tr"); const td = document.createElement("td"); td.colSpan = 6; td.className = "empty";
+      td.textContent = prizes.length ? "Nothing unpaid. Tick Show paid prizes to see the history." : "No prizes yet. Prize amounts may still be $0.";
+      tr.appendChild(td); tbody.appendChild(tr); return;
+    }
+    for (const p of shown) {
+      const tr = document.createElement("tr");
+      const won = document.createElement("td"); won.className = "mono"; won.textContent = p.wonAt.slice(0, 16).replace("T", " ") + " UTC";
+      const handle = document.createElement("td"); handle.className = "mono"; handle.textContent = p.player;
+      const amount = document.createElement("td"); amount.className = "num"; amount.textContent = usd(p.amountUsd) + (p.status === "capped" ? " (capped)" : "");
+      const wallet = document.createElement("td");
+      if (p.wallet) {
+        const w = document.createElement("div"); w.className = "wallet";
+        const code = document.createElement("code"); code.textContent = p.wallet;
+        const copy = document.createElement("button"); copy.type = "button"; copy.textContent = "Copy";
+        copy.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(p.wallet); copy.textContent = "Copied"; }
+          catch (e) { const r = document.createRange(); r.selectNodeContents(code); const s = getSelection(); s.removeAllRanges(); s.addRange(r); copy.textContent = "Selected"; }
+          setTimeout(() => { copy.textContent = "Copy"; }, 1500);
+        });
+        w.append(code, copy); wallet.appendChild(w);
+      } else { const n = document.createElement("span"); n.className = "none"; n.textContent = "no wallet yet"; wallet.appendChild(n); }
+      const status = document.createElement("td"); const st = document.createElement("span");
+      st.className = "st " + (p.paidAt ? "paid" : p.wallet ? "wait" : "nowallet");
+      st.textContent = p.paidAt ? "paid " + p.paidAt.slice(0, 10) + (p.tx ? " · " + p.tx.slice(0, 12) + (p.tx.length > 12 ? "…" : "") : "") : p.wallet ? "ready to pay" : "waiting for wallet";
+      status.appendChild(st);
+      const act = document.createElement("td");
+      if (!p.paidAt && p.wallet) {
+        const box = document.createElement("div"); box.className = "act";
+        const tx = document.createElement("input"); tx.placeholder = "tx hash (optional)"; tx.setAttribute("aria-label", "Transaction hash for " + p.player);
+        const btn = document.createElement("button"); btn.type = "button"; btn.textContent = "Mark paid";
+        btn.addEventListener("click", async () => {
+          btn.disabled = true;
+          try { await call("/prizes/paid", { runId: p.runId, tx: tx.value.trim() }); say("Marked " + usd(p.amountUsd) + " to " + p.player + " as paid."); await load(); }
+          catch (e) { btn.disabled = false; say(e.message, true); }
+        });
+        box.append(tx, btn); act.appendChild(box);
+      }
+      tr.append(won, handle, amount, wallet, status, act); tbody.appendChild(tr);
+    }
+  }
+
+  $("auth").addEventListener("submit", (ev) => {
+    ev.preventDefault();
+    const v = $("token").value.trim(); if (!v) return;
+    token = v; $("token").value = "";
+    load();
+  });
+  $("refresh").addEventListener("click", load);
+  $("show-paid").addEventListener("change", render);
+})();
+</script>
+</body>
+</html>

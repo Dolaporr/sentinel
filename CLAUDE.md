@@ -43,6 +43,7 @@ It exists so that Codex and Claude Code are never both free to edit the same par
   `src/runner/`, `src/core/`) stays Codex's. Touch them only with a new recorded decision.
 - By scope-owner decision on 2026-10-04, Claude Code applied the scope owner's reviewed Sneak Past Sentinel arcade patch to `src/game/` and its test on `feat/sneak-arcade`; that authorisation covered that change only and `src/game/` otherwise stays Codex's.
 - By scope-owner decision on 2026-10-05, Claude Code made Sneak Past Sentinel server-authoritative on `feat/sneak-server` (new PR): `src/game/sneak/`, `src/game/sneak.html`, the Sneak mount in `src/game/hosted-routes.ts`, `tests/game/sneak-server.test.ts`, the Sneak checks in the game custody test and the `test:game` script. Prize runs are recorded, never paid by the server; prize amounts default to $0. No model calls and no change to `src/governor/` or the hosted core. That authorisation covered that change only and `src/game/` otherwise stays Codex's.
+- By scope-owner decision on 2026-10-05, Claude Code added prize claims on `feat/sneak-claims` (a new PR, because PR #4 merged before this landed): a winner gives a Robinhood Chain wallet (format and EIP-55 checksum checked) stored with the pending prize, and an admin list (`/sneak/admin`, behind the hosted admin token) shows handle, amount and wallet and records hand payments once. The server still pays nothing and prize amounts still default to $0. That authorisation covered that change only and `src/game/` otherwise stays Codex's.
 
 ## 2. Adversarial review (standing)
 
