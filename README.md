@@ -1,4 +1,4 @@
-# Sentine
+# Sentinel
 
 **A spend governor for autonomous agents calling LLM gateways.**
 
